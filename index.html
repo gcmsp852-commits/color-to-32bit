@@ -1707,23 +1707,27 @@
                 preBinarized: !!scanPass.preBinarized,
                 singleLocate: scanPass.singleLocate !== false
             };
-            const res = jsQR(scanPass.data, width, height, opts);
-            if (!res || !res.data) return null;
-            if (!acceptQr || acceptQr(res)) return res;
+            const selectAccepted = (items) => {
+                if (!items) return null;
+                const list = Array.isArray(items) ? items : [items];
+                for (const qr of list) {
+                    if (!qr || !qr.data || qr.isRaw) continue;
+                    if (!acceptQr || acceptQr(qr)) return qr;
+                }
+                return null;
+            };
 
-            // ★ フィルタ拒否時: multiモードで全QRを検出し、条件に合うものを探す
+            const res = jsQR(scanPass.data, width, height, opts);
+            const accepted = selectAccepted(res);
+            if (accepted) return accepted;
+
             const multiRes = jsQR(scanPass.data, width, height, {
                 inversionAttempts: opts.inversionAttempts,
                 multi: true,
                 preBinarized: opts.preBinarized,
-                singleLocate: false  // より多くの候補を探索
+                singleLocate: false
             });
-            if (!multiRes) return null;
-            const items = Array.isArray(multiRes) ? multiRes : [multiRes];
-            for (const qr of items) {
-                if (qr && qr.data && !qr.isRaw && acceptQr(qr)) return qr;
-            }
-            return null;
+            return selectAccepted(multiRes);
         }
 
         function decodeTargetedColorPair(scanPasses, width, height, needZero, needOne) {
@@ -2697,6 +2701,31 @@
             );
             if (projectedBuffers.length === 0) return result;
 
+            const sampledStates = sampleNewColorDisplayStates(imageData.data, width, height, q1Data, decoder);
+            if (sampledStates) {
+                if ((!existingResult || !existingResult.qr2) && decoder.states && projectedBuffers[0]) {
+                    const qr2Synth = decodeSyntheticNewColorQr(
+                        buildBitMatrixFromColorStates(sampledStates, decoder.states, 0),
+                        1
+                    );
+                    if (qr2Synth) result.qr2 = qr2Synth.data;
+                }
+                if ((!existingResult || !existingResult.qr3) && decoder.states && projectedBuffers[1]) {
+                    const qr3Synth = decodeSyntheticNewColorQr(
+                        buildBitMatrixFromColorStates(sampledStates, decoder.states, 1),
+                        0
+                    );
+                    if (qr3Synth) result.qr3 = qr3Synth.data;
+                }
+                if (q1Data.mgmtInfo.regionCount === 4 && (!existingResult || !existingResult.qr4) && decoder.states && projectedBuffers[2]) {
+                    const qr4Synth = decodeSyntheticNewColorQr(
+                        buildBitMatrixFromColorStates(sampledStates, decoder.states, 2),
+                        1
+                    );
+                    if (qr4Synth) result.qr4 = qr4Synth.data;
+                }
+            }
+
             const runPairDecode = (binaryData, needZero, needOne) => decodeTargetedColorPair([
                 { data: binaryData, inversionAttempts: 'dontInvert', preBinarized: true, singleLocate: true },
                 { data: binaryData, inversionAttempts: 'attemptBoth', preBinarized: true, singleLocate: true }
@@ -2780,6 +2809,32 @@
                 }
             }
 
+            const needFullFrameFallback = (!result.qr2 && (!existingResult || !existingResult.qr2))
+                || (!result.qr3 && (!existingResult || !existingResult.qr3))
+                || (q1Data.mgmtInfo.regionCount === 4 && !result.qr4 && (!existingResult || !existingResult.qr4));
+            if (needFullFrameFallback) {
+                const fullCrop = { data: imageData.data, width, height, offsetX: 0, offsetY: 0 };
+                const fullProjected = buildNewColorProjectionBuffers(imageData.data, width * height, decoder);
+                if (!result.qr2 && (!existingResult || !existingResult.qr2) && fullProjected[0]) {
+                    const qr2 = decodeProjectedNewColorCrop(fullProjected[0], fullCrop, 1, null);
+                    if (qr2) {
+                        result.qr2 = qr2.data;
+                        result._q2Seed = qr2;
+                    }
+                }
+                if (!result.qr3 && (!existingResult || !existingResult.qr3) && fullProjected[1]) {
+                    const qr3 = decodeProjectedNewColorCrop(fullProjected[1], fullCrop, 0, null);
+                    if (qr3) result.qr3 = qr3.data;
+                }
+                if (q1Data.mgmtInfo.regionCount === 4 && !result.qr4 && (!existingResult || !existingResult.qr4) && fullProjected[2]) {
+                    const qr4 = decodeProjectedNewColorCrop(fullProjected[2], fullCrop, 1, null);
+                    if (qr4) {
+                        result.qr4 = qr4.data;
+                        result._q4Seed = qr4;
+                    }
+                }
+            }
+
             return result;
         }
 
@@ -2799,25 +2854,40 @@
             return true;
         }
 
-        // ★ 新カラー符号化モードの管理ビット解析
-        function parseNewColorMgmt(managementCode) {
+        function parseStandardMgmt(managementCode, managementFlags16 = 0) {
             if (managementCode === undefined || managementCode === null) return null;
-            const mc = managementCode >>> 0;
-            const qrNo = (mc >>> 15) & 1;
-            const colorCountBits = (mc >>> 13) & 3; // 00=2色, 10=4色(3-region), 11=8色(4-region)
-            const colorSpecBits = (mc >>> 5) & 0xFF; // 8-bit color specification
-            const dataCompBits = (mc >>> 3) & 3; // 00=case1, 01=case2(continuous), 10=case3(enc), 11=case4(enc+sign)
-            const sameDataFlag = mc & 1;
-            let regionCount = 2;
-            if (colorCountBits === 2) regionCount = 3; // 10 = 4色 = 3-region
-            if (colorCountBits === 3) regionCount = 4; // 11 = 8色 = 4-region
+            const high = managementCode >>> 0;
+            const low = managementFlags16 >>> 0;
             return {
-                qrNo,
-                regionCount,
-                colorCountBits,
-                colorSpecBits,
-                dataCompBits,
-                sameDataFlag
+                qrNo: (high >>> 15) & 1,
+                colorCountBits: (high >>> 13) & 3,
+                colorSpecBits: (high >>> 5) & 0xFF,
+                dataCompBits: (high >>> 3) & 3,
+                regionIndexBits: (high >>> 1) & 3,
+                sameDataFlag: (high & 1) === 1,
+                encryptionBits: (low >>> 14) & 0x3,
+                sysEncFlag: ((low >>> 15) & 1) === 1,
+                appEncFlag: ((low >>> 14) & 1) === 1,
+                dataTypeBits: (low >>> 11) & 0x7,
+                hasDateTime: (low & 0x0400) !== 0,
+                hasExpiry: (low & 0x0200) !== 0,
+                hasReaderId: (low & 0x0100) !== 0,
+                hasImageId: (low & 0x0080) !== 0,
+                hasLocation: (low & 0x0040) !== 0,
+                hasMunicipality: (low & 0x0020) !== 0
+            };
+        }
+
+        // ★ 新カラー符号化モードの管理ビット解析
+        function parseNewColorMgmt(managementCode, managementFlags16 = 0) {
+            const base = parseStandardMgmt(managementCode, managementFlags16);
+            if (!base) return null;
+            let regionCount = 2;
+            if (base.colorCountBits === 2) regionCount = 3; // 10 = 4色 = 3-region
+            if (base.colorCountBits === 3) regionCount = 4; // 11 = 8色 = 4-region
+            return {
+                ...base,
+                regionCount
             };
         }
 
@@ -2963,7 +3033,7 @@
                             }
 
                             if (q1Found) {
-                                const mgmtInfo = parseNewColorMgmt(q1Found.managementCode);
+                                const mgmtInfo = parseNewColorMgmt(q1Found.managementCode, q1Found.managementFlags16);
                                 if (!mgmtInfo || mgmtInfo.regionCount < 3) {
                                     // 2色（通常モード）のQRを検出した場合、新カラーモードではないので無視
                                     statusText.innerText = "カラーQRツインの第1QRを探索中... (通常QR検出、スキップ)";
@@ -3004,6 +3074,7 @@
                                     newColorQ1Data = {
                                         text: q1Found.data,
                                         managementCode: q1Found.managementCode,
+                                        managementFlags16: q1Found.managementFlags16,
                                         mgmtInfo: mgmtInfo,
                                         creationDateTimeExt32: q1Found.creationDateTimeExt32,
                                         codewords: q1Found.codewords,
@@ -3177,6 +3248,8 @@
                                                 detectedItems.push({
                                                     data: res.data,
                                                     managementCode: res.managementCode,
+                                                    managementCode32: res.managementCode32,
+                                                    managementFlags16: res.managementFlags16,
                                                     creationDateTimeExt32: res.creationDateTimeExt32,
                                                     managementExt32: res.managementExt32,
                                                     expiryExt32: res.expiryExt32,
@@ -3234,6 +3307,8 @@
                                                 detectedItems.push({
                                                     data: cropRes.data,
                                                     managementCode: cropRes.managementCode,
+                                                    managementCode32: cropRes.managementCode32,
+                                                    managementFlags16: cropRes.managementFlags16,
                                                     creationDateTimeExt32: cropRes.creationDateTimeExt32,
                                                     managementExt32: cropRes.managementExt32,
                                                     expiryExt32: cropRes.expiryExt32,
@@ -3291,6 +3366,8 @@
                                         detectedItems.push({
                                             data: cropRes.data,
                                             managementCode: cropRes.managementCode,
+                                                    managementCode32: cropRes.managementCode32,
+                                                    managementFlags16: cropRes.managementFlags16,
                                             creationDateTimeExt32: cropRes.creationDateTimeExt32,
                                             managementExt32: cropRes.managementExt32,
                                             expiryExt32: cropRes.expiryExt32,
@@ -3348,6 +3425,8 @@
                                     detectedItems.push({
                                         data: resFull.data,
                                         managementCode: resFull.managementCode,
+                                        managementCode32: resFull.managementCode32,
+                                        managementFlags16: resFull.managementFlags16,
                                         creationDateTimeExt32: resFull.creationDateTimeExt32,
                                         managementExt32: resFull.managementExt32,
                                         expiryExt32: resFull.expiryExt32,
@@ -3372,8 +3451,9 @@
                     // --- 結果処理ループ ---
                     for (let item of detectedItems) {
                         const { data: resultData, managementCode: resultMgmt, points: resultPts } = item;
-                        const mgmtStr = resultMgmt !== undefined ? resultMgmt.toString(2).padStart(16, '0') : "0000000000000000";
-                        const topBit = ((resultMgmt || 0) >> 15) & 1; // 0なら第1QR、1なら第2QR
+                        const mgmtFlags16 = item.managementFlags16 !== undefined ? item.managementFlags16 : ((item.managementCode32 || 0) & 0xFFFF);
+                        const mgmtInfo = parseStandardMgmt(resultMgmt, mgmtFlags16);
+                        const topBit = mgmtInfo ? mgmtInfo.qrNo : (((resultMgmt || 0) >> 15) & 1); // 0なら第1QR、1なら第2QR
 
                         if (scanStage === 1) {
                             // Stage 1でQRを発見した際、領域を保存
@@ -3502,7 +3582,7 @@
                             }
 
                             // 同一データフラグ
-                            if (mgmtStr[5] === '1') {
+                            if (mgmtInfo && mgmtInfo.sameDataFlag) {
                                 secondQR = { text: resultData, managementCode: resultMgmt, points: resultPts };
                                 isScanning = false;
                                 isProcessing = false;
@@ -3511,11 +3591,11 @@
                             }
 
                             if (scanMode === 'normal') {
-                                if (mgmtStr[6] === '1') {
+                                if (mgmtInfo && mgmtInfo.sysEncFlag) {
                                     isProcessing = false;
                                     showSysEncScreen();
                                     return;
-                                } else if (mgmtStr[7] === '1') {
+                                } else if (mgmtInfo && mgmtInfo.appEncFlag) {
                                     isProcessing = false;
                                     showPasswordScreen();
                                     return;
@@ -3672,6 +3752,11 @@
     </script>
 </body>
 </html>
+
+
+
+
+
 
 
 
