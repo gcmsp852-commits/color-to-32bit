@@ -2158,7 +2158,7 @@
             document.getElementById('newColorResultScreen').style.display = 'flex';
         }
 
-        // ★ 新カラー符号化: ピクセルごとの色分離ロジック
+        // ★ 新カラー符号化: ピクセルごとの色分離ロジック (JAB CodeライクなYCbCr堅牢アルゴリズム)
         function splitNewColorQRs(src, width, height, regionCount, colorSpecBits) {
             const pixelCount = width * height;
             const len4 = pixelCount * 4;
@@ -2169,36 +2169,42 @@
             
             // Alpha初期化
             for(let i=3; i<len4; i+=4) {
-                q2img[i] = 255;
-                q3img[i] = 255;
+                q2img[i] = 255; q3img[i] = 255;
                 if (q4img) q4img[i] = 255;
             }
 
-            // 色名からRGB値を取得するヘルパー
-            function getCol(name) {
-                const MULTICOLOR_RGB = {
-                    black: {r:0, g:0, b:0}, blue: {r:0, g:0, b:255}, red: {r:255, g:0, b:0}, purple: {r:255, g:0, b:255},
-                    yellow: {r:255, g:255, b:0}, cyan: {r:0, g:255, b:255}, green: {r:0, g:255, b:0}, white: {r:255, g:255, b:255}
-                };
-                return MULTICOLOR_RGB[name];
-            }
+            // YCbCr定義 (Black..White)
+            const paletteYCbCr = [
+                { y:   0, cb: 128, cr: 128 }, // 0: Black
+                { y:  29, cb: 255, cr: 107 }, // 1: Blue
+                { y:  76, cb:  85, cr: 255 }, // 2: Red
+                { y: 105, cb: 212, cr: 234 }, // 3: Purple (Magenta)
+                { y: 150, cb:  44, cr:  21 }, // 4: Green
+                { y: 178, cb: 171, cr:   0 }, // 5: Cyan
+                { y: 226, cb:   0, cr: 149 }, // 6: Yellow
+                { y: 255, cb: 128, cr: 128 }  // 7: White
+            ];
+
+            // 1. 各色に対するQ2/Q3/Q4のDark(0)/Light(255)マッピングテーブルの作成
+            const colorsList = ["black", "blue", "red", "purple", "green", "cyan", "yellow", "white"];
+            const q2Map = new Array(8).fill(false);
+            const q3Map = new Array(8).fill(false);
+            const q4Map = new Array(8).fill(false);
+            const activeIndices = [];
 
             if (regionCount === 3) {
-                // 3領域(4色) 色指定ビットから使用色を復元
-                const colorsList = ["black", "blue", "red", "purple", "yellow", "cyan", "green", "white"];
-                const activeColors = [];
+                // 3領域(4色): ビットからアクティブ色を抽出
                 for (let i = 0; i < 8; i++) {
-                    if ((colorSpecBits >>> (7 - i)) & 1) activeColors.push(colorsList[i]);
+                    if ((colorSpecBits >>> (7 - i)) & 1) activeIndices.push(i);
                 }
+                const activeNames = activeIndices.map(i => colorsList[i]);
                 
                 const darkNames = ["black", "blue", "red", "purple"];
-                const lightNames = ["white", "green", "cyan", "yellow"]; // 明色の優先度(高→低は green,cyan,yellow,white だが実装に合わせる)
+                const lightNames = ["white", "green", "cyan", "yellow"];
+                const activeDark = activeNames.filter(c => darkNames.includes(c));
+                const activeLight = activeNames.filter(c => lightNames.includes(c));
                 
-                const activeDark = activeColors.filter(c => darkNames.includes(c));
-                const activeLight = activeColors.filter(c => lightNames.includes(c));
-                
-                // Generator側の優先順位に合わせた厳密な分類: 
-                // 暗高: 黒 > 青 > 赤 > 紫, 暗低: 黒以外で低い方 
+                // Generator側の優先順位に合わせた厳密な分類 
                 let darkHigh, darkLow;
                 if (activeDark.includes("black")) {
                     darkHigh = "black";
@@ -2210,7 +2216,6 @@
                     darkLow = activeDark[1] || "purple";
                 }
 
-                // 明高: 白以外で高い方 (緑 > 水色 > 黄色), 明低: 白
                 let lightHigh, lightLow;
                 if (activeLight.includes("white")) {
                     lightHigh = activeLight.find(c => c !== "white") || "green";
@@ -2222,66 +2227,58 @@
                     lightLow = activeLight[1] || "yellow";
                 }
 
-                // マッピング: { colorName: [q2dark, q3dark] }
-                const map = {};
-                map[darkHigh] = [true, true];
-                map[darkLow] = [true, false];
-                map[lightHigh] = [false, true];
-                map[lightLow] = [false, false];
-
-                const colorKeys = [darkHigh, darkLow, lightHigh, lightLow];
-                const profiles = colorKeys.map(k => getCol(k));
-
-                for (let idx = 0; idx < len4; idx += 4) {
-                    const r = src[idx], g = src[idx+1], b = src[idx+2];
-                    let minDist = Infinity;
-                    let bestKeyIdx = 0;
-                    
-                    for (let i = 0; i < 4; i++) {
-                        const p = profiles[i];
-                        const dist = Math.abs(r - p.r) + Math.abs(g - p.g) + Math.abs(b - p.b);
-                        if (dist < minDist) {
-                            minDist = dist;
-                            bestKeyIdx = i;
-                        }
-                    }
-                    
-                    const [q2d, q3d] = map[colorKeys[bestKeyIdx]];
-                    const q2v = q2d ? 0 : 255;
-                    const q3v = q3d ? 0 : 255;
-                    
-                    q2img[idx] = q2v; q2img[idx+1] = q2v; q2img[idx+2] = q2v;
-                    q3img[idx] = q3v; q3img[idx+1] = q3v; q3img[idx+2] = q3v;
-                }
-
-            } else if (regionCount === 4) {
-                // 4領域(8色)
-                const mapKeys = ["black", "blue", "red", "purple", "green", "cyan", "yellow", "white"];
-                const profiles = mapKeys.map(k => getCol(k));
+                // マップへの登録
+                q2Map[colorsList.indexOf(darkHigh)] = true; q3Map[colorsList.indexOf(darkHigh)] = true;
+                q2Map[colorsList.indexOf(darkLow)] = true; q3Map[colorsList.indexOf(darkLow)] = false;
+                q2Map[colorsList.indexOf(lightHigh)] = false; q3Map[colorsList.indexOf(lightHigh)] = true;
+                q2Map[colorsList.indexOf(lightLow)] = false; q3Map[colorsList.indexOf(lightLow)] = false;
+                
+            } else {
+                // 4領域(8色): 全8色を静的マッピング
+                for (let i = 0; i < 8; i++) activeIndices.push(i);
                 const q2m=[true,true,true,true,false,false,false,false];
                 const q3m=[true,true,false,false,true,true,false,false];
                 const q4m=[true,false,true,false,true,false,true,false];
+                for(let i=0; i<8; i++){
+                    q2Map[i]=q2m[i]; q3Map[i]=q3m[i]; q4Map[i]=q4m[i];
+                }
+            }
+
+            // 2. メインループ: 全ピクセルをスキャンし、YCbCr空間で最も近い色に分類する
+            for (let idx = 0; idx < len4; idx += 4) {
+                const r = src[idx], g = src[idx+1], b = src[idx+2];
+
+                // YCbCrに変換
+                const Y = 0.299*r + 0.587*g + 0.114*b;
+                const Cb = 128 - 0.168736*r - 0.331264*g + 0.5*b;
+                const Cr = 128 + 0.5*r - 0.418688*g - 0.081312*b;
                 
-                for (let idx = 0; idx < len4; idx += 4) {
-                    const r = src[idx], g = src[idx+1], b = src[idx+2];
-                    let minDist = Infinity;
-                    let bestKeyIdx = 7;
-                    
-                    for (let i = 0; i < 8; i++) {
-                        const p = profiles[i];
-                        const dist = Math.abs(r - p.r) + Math.abs(g - p.g) + Math.abs(b - p.b);
-                        if (dist < minDist) {
-                            minDist = dist;
-                            bestKeyIdx = i;
-                        }
+                let bestScore = Infinity;
+                let bestIdx = 0;
+
+                for (const i of activeIndices) {
+                    const p = paletteYCbCr[i];
+                    let score;
+                    if (i === 0 || i === 7) {
+                        // 無彩色(黒・白): 彩度が低いことを要求し、輝度で判定
+                        score = Math.abs(Y - p.y) * 1.5 + Math.hypot(Cb - 128, Cr - 128) * 2.0;
+                    } else {
+                        // 有彩色(その他): CbCr(色味・彩度)の距離を重視、輝度の変動は寛容に
+                        score = Math.hypot(Cb - p.cb, Cr - p.cr) * 1.5 + Math.abs(Y - p.y) * 0.4;
                     }
-                    
-                    const q2v = q2m[bestKeyIdx] ? 0 : 255;
-                    const q3v = q3m[bestKeyIdx] ? 0 : 255;
-                    const q4v = q4m[bestKeyIdx] ? 0 : 255;
-                    
-                    q2img[idx] = q2v; q2img[idx+1] = q2v; q2img[idx+2] = q2v;
-                    q3img[idx] = q3v; q3img[idx+1] = q3v; q3img[idx+2] = q3v;
+                    if (score < bestScore) {
+                        bestScore = score;
+                        bestIdx = i;
+                    }
+                }
+
+                const q2v = q2Map[bestIdx] ? 0 : 255;
+                const q3v = q3Map[bestIdx] ? 0 : 255;
+                q2img[idx] = q2v; q2img[idx+1] = q2v; q2img[idx+2] = q2v;
+                q3img[idx] = q3v; q3img[idx+1] = q3v; q3img[idx+2] = q3v;
+                
+                if (q4img) {
+                    const q4v = q4Map[bestIdx] ? 0 : 255;
                     q4img[idx] = q4v; q4img[idx+1] = q4v; q4img[idx+2] = q4v;
                 }
             }
