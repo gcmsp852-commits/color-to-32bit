@@ -2308,19 +2308,21 @@
                 x: (bl.x - tl.x) / moduleCount,
                 y: (bl.y - tl.y) / moduleCount
             };
+            const moduleSize = (
+                Math.hypot(stepX.x, stepX.y) +
+                Math.hypot(stepY.x, stepY.y)
+            ) / 2;
 
             return {
                 tl,
                 moduleCount,
                 stepX,
                 stepY,
+                moduleSize,
                 sampleRadius: Math.max(
                     1,
                     Math.round(
-                        Math.min(
-                            Math.hypot(stepX.x, stepX.y),
-                            Math.hypot(stepY.x, stepY.y)
-                        ) * 0.18
+                        Math.max(1, moduleSize) * 0.16
                     )
                 )
             };
@@ -2338,6 +2340,45 @@
             return rotated;
         }
 
+        function sampleNewColorModuleState(src, width, height, affine, decoder, row, col) {
+            const probeOffsets = [
+                { dx: 0, dy: 0, weight: 3 },
+                { dx: -0.18, dy: 0, weight: 1 },
+                { dx: 0.18, dy: 0, weight: 1 },
+                { dx: 0, dy: -0.18, weight: 1 },
+                { dx: 0, dy: 0.18, weight: 1 }
+            ];
+            const votes = new Map();
+            const radius = Math.max(1, Math.round(affine.sampleRadius * 0.85));
+
+            for (const probe of probeOffsets) {
+                const fx = affine.tl.x
+                    + (col + 0.5 + NEW_COLOR_SHIFT_MODULES + probe.dx) * affine.stepX.x
+                    + (row + 0.5 + NEW_COLOR_SHIFT_MODULES + probe.dy) * affine.stepY.x;
+                const fy = affine.tl.y
+                    + (col + 0.5 + NEW_COLOR_SHIFT_MODULES + probe.dx) * affine.stepX.y
+                    + (row + 0.5 + NEW_COLOR_SHIFT_MODULES + probe.dy) * affine.stepY.y;
+
+                if (fx < 0 || fy < 0 || fx >= width || fy >= height) continue;
+
+                const rgb = averageRgbSample(src, width, height, fx, fy, radius);
+                const state = classifyNamedColorSample(rgb.r, rgb.g, rgb.b, decoder.candidates);
+                votes.set(state, (votes.get(state) || 0) + probe.weight);
+            }
+
+            if (votes.size === 0) return 'white';
+
+            let bestState = decoder.candidates[0] || 'white';
+            let bestWeight = -1;
+            for (const [state, weight] of votes.entries()) {
+                if (weight > bestWeight) {
+                    bestWeight = weight;
+                    bestState = state;
+                }
+            }
+            return bestState;
+        }
+
         function sampleNewColorDisplayStates(src, width, height, q1Data, decoder) {
             const affine = buildNewColorAffine(q1Data);
             if (!affine || !decoder || !decoder.candidates || decoder.candidates.length === 0) return null;
@@ -2346,24 +2387,216 @@
             for (let r = 0; r < affine.moduleCount; r++) {
                 states[r] = new Array(affine.moduleCount);
                 for (let c = 0; c < affine.moduleCount; c++) {
-                    const fx = affine.tl.x
-                        + (c + 0.5 + NEW_COLOR_SHIFT_MODULES) * affine.stepX.x
-                        + (r + 0.5 + NEW_COLOR_SHIFT_MODULES) * affine.stepY.x;
-                    const fy = affine.tl.y
-                        + (c + 0.5 + NEW_COLOR_SHIFT_MODULES) * affine.stepX.y
-                        + (r + 0.5 + NEW_COLOR_SHIFT_MODULES) * affine.stepY.y;
-
-                    if (fx < 0 || fy < 0 || fx >= width || fy >= height) {
-                        states[r][c] = 'white';
-                        continue;
-                    }
-
-                    const rgb = averageRgbSample(src, width, height, fx, fy, affine.sampleRadius);
-                    states[r][c] = classifyNamedColorSample(rgb.r, rgb.g, rgb.b, decoder.candidates);
+                    states[r][c] = sampleNewColorModuleState(src, width, height, affine, decoder, r, c);
                 }
             }
 
             return states;
+        }
+
+        function getQrLocationBBox(location) {
+            if (!location) return null;
+            const points = [
+                location.topLeftCorner,
+                location.topRightCorner,
+                location.bottomRightCorner,
+                location.bottomLeftCorner
+            ].filter(Boolean);
+            if (points.length < 3) return null;
+            const xs = points.map(point => point.x);
+            const ys = points.map(point => point.y);
+            const minX = Math.min(...xs);
+            const maxX = Math.max(...xs);
+            const minY = Math.min(...ys);
+            const maxY = Math.max(...ys);
+            return {
+                x: minX,
+                y: minY,
+                width: Math.max(1, maxX - minX),
+                height: Math.max(1, maxY - minY)
+            };
+        }
+
+        function rectIntersectionArea(a, b) {
+            if (!a || !b) return 0;
+            const x0 = Math.max(a.x, b.x);
+            const y0 = Math.max(a.y, b.y);
+            const x1 = Math.min(a.x + a.width, b.x + b.width);
+            const y1 = Math.min(a.y + a.height, b.y + b.height);
+            if (x1 <= x0 || y1 <= y0) return 0;
+            return (x1 - x0) * (y1 - y0);
+        }
+
+        function computeShiftedNewColorBounds(q1Data, shiftModules = NEW_COLOR_SHIFT_MODULES) {
+            const affine = buildNewColorAffine(q1Data);
+            if (!affine || !q1Data || !q1Data.location) return null;
+
+            const tl = q1Data.location.topLeftCorner;
+            const tr = q1Data.location.topRightCorner;
+            const bl = q1Data.location.bottomLeftCorner;
+            const br = q1Data.location.bottomRightCorner || (
+                tl && tr && bl ? {
+                    x: tr.x + bl.x - tl.x,
+                    y: tr.y + bl.y - tl.y
+                } : null
+            );
+            const corners = [tl, tr, br, bl].filter(Boolean);
+            if (corners.length < 4) return null;
+
+            const shiftX = (affine.stepX.x + affine.stepY.x) * shiftModules;
+            const shiftY = (affine.stepX.y + affine.stepY.y) * shiftModules;
+            const shifted = corners.map(point => ({
+                x: point.x + shiftX,
+                y: point.y + shiftY
+            }));
+            const xs = shifted.map(point => point.x);
+            const ys = shifted.map(point => point.y);
+
+            return {
+                x: Math.min(...xs),
+                y: Math.min(...ys),
+                width: Math.max(1, Math.max(...xs) - Math.min(...xs)),
+                height: Math.max(1, Math.max(...ys) - Math.min(...ys)),
+                moduleSize: affine.moduleSize || estimateModuleSizeFromQr(q1Data) || 1
+            };
+        }
+
+        function buildNewColorTwinCropSpecs(width, height, q1Data) {
+            const specs = [];
+            const seen = new Set();
+            const shiftCandidates = [8.5, 8.25, 8.75, 8.0, 9.0];
+            const padCandidates = [2.5, 4.0];
+
+            for (const shift of shiftCandidates) {
+                const shiftedBounds = computeShiftedNewColorBounds(q1Data, shift);
+                if (!shiftedBounds) continue;
+
+                for (const padModules of padCandidates) {
+                    const pad = Math.max(10, Math.round(shiftedBounds.moduleSize * padModules));
+                    const x = Math.max(0, Math.floor(shiftedBounds.x - pad));
+                    const y = Math.max(0, Math.floor(shiftedBounds.y - pad));
+                    const right = Math.min(width, Math.ceil(shiftedBounds.x + shiftedBounds.width + pad));
+                    const bottom = Math.min(height, Math.ceil(shiftedBounds.y + shiftedBounds.height + pad));
+                    const cropWidth = Math.max(1, right - x);
+                    const cropHeight = Math.max(1, bottom - y);
+                    const key = [x, y, cropWidth, cropHeight].join(':');
+                    if (seen.has(key)) continue;
+                    seen.add(key);
+
+                    const localLeft = Math.max(0, shiftedBounds.x - x);
+                    const localTop = Math.max(0, shiftedBounds.y - y);
+                    const localRight = Math.min(cropWidth, shiftedBounds.x + shiftedBounds.width - x);
+                    const localBottom = Math.min(cropHeight, shiftedBounds.y + shiftedBounds.height - y);
+
+                    specs.push({
+                        x,
+                        y,
+                        width: cropWidth,
+                        height: cropHeight,
+                        expectedRect: {
+                            x: localLeft,
+                            y: localTop,
+                            width: Math.max(1, localRight - localLeft),
+                            height: Math.max(1, localBottom - localTop)
+                        }
+                    });
+                }
+            }
+
+            if (specs.length === 0) {
+                specs.push({
+                    x: 0,
+                    y: 0,
+                    width,
+                    height,
+                    expectedRect: null
+                });
+            }
+
+            return specs;
+        }
+
+        function buildNewColorProjectionBuffers(src, pixelCount, decoder) {
+            if (!decoder || !decoder.states) return [];
+
+            const bitCount = Math.max(
+                0,
+                ...Object.values(decoder.states).map(bits => Array.isArray(bits) ? bits.length : 0)
+            );
+            if (bitCount <= 0) return [];
+
+            const projected = Array.from({ length: bitCount }, () => {
+                const out = new Uint8ClampedArray(pixelCount * 4);
+                out.fill(255);
+                return out;
+            });
+            const classifyCandidates = Array.from(new Set(['black', ...decoder.candidates, 'white']));
+            const zeroBits = new Array(bitCount).fill(0);
+            const blackBits = new Array(bitCount).fill(1);
+
+            for (let idx = 0; idx < pixelCount * 4; idx += 4) {
+                const r = src[idx];
+                const g = src[idx + 1];
+                const b = src[idx + 2];
+                const stateName = classifyNamedColorSample(r, g, b, classifyCandidates);
+                const stateBits = decoder.states[stateName]
+                    || (stateName === 'black' ? blackBits : zeroBits);
+
+                for (let bitIndex = 0; bitIndex < bitCount; bitIndex++) {
+                    if (!stateBits[bitIndex]) continue;
+                    projected[bitIndex][idx] = 0;
+                    projected[bitIndex][idx + 1] = 0;
+                    projected[bitIndex][idx + 2] = 0;
+                }
+            }
+
+            return projected;
+        }
+
+        function decodeProjectedNewColorCrop(binaryData, crop, expectedTopBit = null, expectedRect = null) {
+            if (!binaryData || !crop) return null;
+
+            const acceptQr = (qr) => {
+                if (!qr || !qr.data || qr.isRaw) return false;
+                if (expectedTopBit !== undefined && expectedTopBit !== null) {
+                    const topBit = getColorPairTopBit(qr);
+                    if (topBit !== null && topBit !== expectedTopBit) return false;
+                }
+                if (!expectedRect) return true;
+
+                const bbox = getQrLocationBBox(qr.location);
+                if (!bbox) return true;
+
+                const overlap = rectIntersectionArea(bbox, expectedRect);
+                const bboxArea = bbox.width * bbox.height;
+                const expectedArea = expectedRect.width * expectedRect.height;
+                const bboxCx = bbox.x + bbox.width / 2;
+                const bboxCy = bbox.y + bbox.height / 2;
+                const expectedCx = expectedRect.x + expectedRect.width / 2;
+                const expectedCy = expectedRect.y + expectedRect.height / 2;
+                const centerDx = Math.abs(bboxCx - expectedCx);
+                const centerDy = Math.abs(bboxCy - expectedCy);
+                const sizeMatch = bbox.width >= expectedRect.width * 0.45
+                    && bbox.height >= expectedRect.height * 0.45;
+                const overlapMatch = overlap >= Math.min(bboxArea, expectedArea) * 0.12;
+                const centerMatch = centerDx <= Math.max(12, expectedRect.width * 0.42)
+                    && centerDy <= Math.max(12, expectedRect.height * 0.42);
+
+                return sizeMatch && (overlapMatch || centerMatch);
+            };
+
+            const scanPasses = [
+                { data: binaryData, inversionAttempts: 'dontInvert', preBinarized: true, singleLocate: true },
+                { data: binaryData, inversionAttempts: 'attemptBoth', preBinarized: true, singleLocate: true },
+                { data: binaryData, inversionAttempts: 'attemptBoth', preBinarized: true, singleLocate: false }
+            ];
+
+            for (const scanPass of scanPasses) {
+                const qr = decodeSingleColorQr(scanPass, crop.width, crop.height, acceptQr);
+                if (qr) return offsetQrResult(qr, crop.offsetX, crop.offsetY);
+            }
+
+            return null;
         }
 
         function buildBitMatrixFromColorStates(states, colorStates, bitIndex) {
@@ -2426,26 +2659,75 @@
             if (!decoder) return null;
 
             const displayStates = sampleNewColorDisplayStates(imageData.data, width, height, q1Data, decoder);
-            if (!displayStates) return null;
-            const originalStates = rotateStateMatrix180(displayStates);
             const result = { qr2: null, qr3: null, qr4: null };
+            if (displayStates) {
+                const originalStates = rotateStateMatrix180(displayStates);
 
-            if (!existingResult || !existingResult.qr2) {
-                const q2Bits = buildBitMatrixFromColorStates(originalStates, decoder.states, 0);
-                const q2Qr = decodeSyntheticNewColorQr(q2Bits, 1);
-                if (q2Qr) result.qr2 = q2Qr.data;
+                if (!existingResult || !existingResult.qr2) {
+                    const q2Bits = buildBitMatrixFromColorStates(originalStates, decoder.states, 0);
+                    const q2Qr = decodeSyntheticNewColorQr(q2Bits, 1);
+                    if (q2Qr) result.qr2 = q2Qr.data;
+                }
+
+                if (!existingResult || !existingResult.qr3) {
+                    const q3Bits = buildBitMatrixFromColorStates(originalStates, decoder.states, 1);
+                    const q3Qr = decodeSyntheticNewColorQr(q3Bits, 0);
+                    if (q3Qr) result.qr3 = q3Qr.data;
+                }
+
+                if (q1Data.mgmtInfo.regionCount === 4 && (!existingResult || !existingResult.qr4)) {
+                    const q4Bits = buildBitMatrixFromColorStates(originalStates, decoder.states, 2);
+                    const q4Qr = decodeSyntheticNewColorQr(q4Bits, 1);
+                    if (q4Qr) result.qr4 = q4Qr.data;
+                }
             }
 
-            if (!existingResult || !existingResult.qr3) {
-                const q3Bits = buildBitMatrixFromColorStates(originalStates, decoder.states, 1);
-                const q3Qr = decodeSyntheticNewColorQr(q3Bits, 0);
-                if (q3Qr) result.qr3 = q3Qr.data;
-            }
+            const needProjectedQ2 = (!existingResult || !existingResult.qr2) && !result.qr2;
+            const needProjectedQ3 = (!existingResult || !existingResult.qr3) && !result.qr3;
+            const needProjectedQ4 = q1Data.mgmtInfo.regionCount === 4
+                && (!existingResult || !existingResult.qr4)
+                && !result.qr4;
 
-            if (q1Data.mgmtInfo.regionCount === 4 && (!existingResult || !existingResult.qr4)) {
-                const q4Bits = buildBitMatrixFromColorStates(originalStates, decoder.states, 2);
-                const q4Qr = decodeSyntheticNewColorQr(q4Bits, 1);
-                if (q4Qr) result.qr4 = q4Qr.data;
+            if (needProjectedQ2 || needProjectedQ3 || needProjectedQ4) {
+                const cropSpecs = buildNewColorTwinCropSpecs(width, height, q1Data);
+                for (const cropSpec of cropSpecs) {
+                    const rawCrop = cropMonochromeRgbaImage(
+                        imageData.data,
+                        width,
+                        height,
+                        cropSpec.x,
+                        cropSpec.y,
+                        cropSpec.width,
+                        cropSpec.height
+                    );
+                    const projectedBuffers = buildNewColorProjectionBuffers(
+                        rawCrop.data,
+                        rawCrop.width * rawCrop.height,
+                        decoder
+                    );
+
+                    if (!result.qr2 && (!existingResult || !existingResult.qr2) && projectedBuffers[0]) {
+                        const qr2 = decodeProjectedNewColorCrop(projectedBuffers[0], rawCrop, 1, cropSpec.expectedRect);
+                        if (qr2) result.qr2 = qr2.data;
+                    }
+
+                    if (!result.qr3 && (!existingResult || !existingResult.qr3) && projectedBuffers[1]) {
+                        const qr3 = decodeProjectedNewColorCrop(projectedBuffers[1], rawCrop, 0, cropSpec.expectedRect);
+                        if (qr3) result.qr3 = qr3.data;
+                    }
+
+                    if (q1Data.mgmtInfo.regionCount === 4
+                        && !result.qr4
+                        && (!existingResult || !existingResult.qr4)
+                        && projectedBuffers[2]) {
+                        const qr4 = decodeProjectedNewColorCrop(projectedBuffers[2], rawCrop, 1, cropSpec.expectedRect);
+                        if (qr4) result.qr4 = qr4.data;
+                    }
+
+                    const projectedComplete = result.qr2 && result.qr3
+                        && (q1Data.mgmtInfo.regionCount !== 4 || result.qr4);
+                    if (projectedComplete) break;
+                }
             }
 
             return result;
