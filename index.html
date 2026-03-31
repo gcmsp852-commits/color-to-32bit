@@ -86,6 +86,7 @@
                 <button class="btn sys-enc" id="digitalSignModeBtn">電子署名モード</button>
                 <button class="btn double-enc" id="doubleEncModeBtn">二重暗号化モード</button>
                 <button class="btn" id="colorEncModeBtn" style="background-color:#00897B; display:none;">カラー符号化モード</button>
+                <button class="btn" id="newColorEncModeBtn" style="background-color:#6A1B9A;">新カラー符号化モード</button>
                 <button class="btn secondary" id="logoutBtn" style="margin-top:10px; font-size:0.9rem;">ログアウト</button>
             </div>
         </div>
@@ -234,6 +235,37 @@
                 <div class="text" id="colorRes4">-</div>
             </div>
             <button class="btn" style="background-color:#00897B;" onclick="restartScan()">もう一度スキャン</button>
+            <button class="btn secondary" onclick="goBack()">モード切替</button>
+        </div>
+    </div>
+
+    <!-- 新カラー符号化: 結果画面 -->
+    <div class="overlay-screen" id="newColorResultScreen">
+        <div class="overlay-box" style="gap: 12px; max-height: 90vh; overflow-y: auto;">
+            <h2 id="newColorResultTitle" style="color:#6A1B9A;">新カラー符号化 読取り結果</h2>
+            <div id="newColorRegionInfo" style="font-size:0.85rem; color:#aaa; text-align:center;"></div>
+            <div class="qr-data-card" style="border-color: #00E676;">
+                <label style="color:#00E676;">第1QR データ</label>
+                <div class="text" id="newColorRes1">-</div>
+            </div>
+            <div class="qr-data-card" style="border-color: #29B6F6;">
+                <label style="color:#29B6F6;">第2QR データ</label>
+                <div class="text" id="newColorRes2">-</div>
+            </div>
+            <div class="qr-data-card" style="border-color: #FF9800;">
+                <label style="color:#FF9800;">第3QR データ</label>
+                <div class="text" id="newColorRes3">-</div>
+            </div>
+            <div id="newColorRes4Card" class="qr-data-card" style="border-color: #CE93D8; display:none;">
+                <label style="color:#CE93D8;">第4QR データ</label>
+                <div class="text" id="newColorRes4">-</div>
+            </div>
+            <!-- 連続データ表示用 -->
+            <div id="newColorContinuousCard" class="qr-data-card" style="border-color: #4CAF50; display:none;">
+                <label style="color:#4CAF50;">連続データ（結合）</label>
+                <div class="text" id="newColorResContinuous">-</div>
+            </div>
+            <button class="btn" style="background-color:#6A1B9A;" onclick="restartScan()">もう一度スキャン</button>
             <button class="btn secondary" onclick="goBack()">モード切替</button>
         </div>
     </div>
@@ -454,8 +486,10 @@
         const COLOR_DETECT_REFRESH_EVERY = 2;
         const COLOR_BBOX_PADDING = 64;
 
-        // モード: 'normal' or 'double'
+        // モード: 'normal', 'double', 'digital_sign', 'color_enc', 'new_color_enc'
         let scanMode = 'normal';
+        let newColorScanStage = 0; // 0=Q1探索中, 1=Q1検出済み(色QR探索中)
+        let newColorQ1Data = null; // 第1QRの読取結果
 
         let barcodeDetector = null;
         if ('BarcodeDetector' in window) {
@@ -718,6 +752,8 @@
 
                 if (scanMode === 'normal') {
                     statusText.innerText = "第1QRを探索中... (Hybrid)";
+                } else if (scanMode === 'new_color_enc') {
+                    statusText.innerText = "カラーQRツインの第1QRを探索中...";
                 } else {
                     statusText.innerText = "第1QR（システム暗号化）を探索中...";
                 }
@@ -750,6 +786,15 @@
             scanMode = 'digital_sign';
             document.getElementById('headerText').innerText = 'QR Twin Reader (電子署名対応)';
             startScanByDigitalSign();
+        });
+
+        // ★ 新カラー符号化モード
+        document.getElementById('newColorEncModeBtn').addEventListener('click', () => {
+            scanMode = 'new_color_enc';
+            newColorScanStage = 0;
+            newColorQ1Data = null;
+            document.getElementById('headerText').innerText = 'QR Twin Reader (新カラー符号化)';
+            startCamera();
         });
 
         function startScanByDigitalSign() {
@@ -985,6 +1030,7 @@
             document.getElementById('doubleEncScreen').style.display = 'none';
             document.getElementById('colorSettingsScreen').style.display = 'none';
             document.getElementById('colorResultScreen').style.display = 'none';
+            document.getElementById('newColorResultScreen').style.display = 'none';
             firstQR = null;
             secondQR = null;
             appMask = null;
@@ -992,6 +1038,8 @@
             sysEncStage3 = false;
             digitalSignStage3 = false;
             lastTwinBBox = null;
+            newColorScanStage = 0;
+            newColorQ1Data = null;
             
             // モード選択画面に戻す
             scanStage = 0;
@@ -1009,6 +1057,7 @@
             document.getElementById('doubleEncScreen').style.display = 'none';
             document.getElementById('colorSettingsScreen').style.display = 'none';
             document.getElementById('colorResultScreen').style.display = 'none';
+            document.getElementById('newColorResultScreen').style.display = 'none';
             firstQR = null;
             secondQR = null;
             appMask = null;
@@ -1016,6 +1065,8 @@
             sysEncStage3 = false;
             digitalSignStage3 = false;
             lastTwinBBox = null;
+            newColorScanStage = 0;
+            newColorQ1Data = null;
             // ★ 防御的リセット：前回スキャン中の状態が残る場合に備える
             isProcessing = false;
             lastDetectTime = 0;
@@ -1033,6 +1084,11 @@
             } else if (scanMode === 'color_enc') {
                 scanStage = 1;
                 statusText.innerText = "Scanning Color QR Twin...";
+            } else if (scanMode === 'new_color_enc') {
+                newColorScanStage = 0;
+                newColorQ1Data = null;
+                scanStage = 1;
+                statusText.innerText = "カラーQRツインの第1QRを探索中...";
             } else if (scanMode === 'normal') {
                 scanStage = 1;
                 statusText.innerText = "Scanning QR1... (Hybrid)";
@@ -2026,6 +2082,74 @@
             document.getElementById('colorResultScreen').style.display = 'flex';
         }
 
+        // ★ 新カラー符号化モードの管理ビット解析
+        function parseNewColorMgmt(managementCode) {
+            if (managementCode === undefined || managementCode === null) return null;
+            const mc = managementCode >>> 0;
+            const qrNo = (mc >>> 15) & 1;
+            const colorCountBits = (mc >>> 13) & 3; // 00=2色, 10=4色(3-region), 11=8色(4-region)
+            const colorSpecBits = (mc >>> 5) & 0xFF; // 8-bit color specification
+            const dataCompBits = (mc >>> 3) & 3; // 00=case1, 01=case2(continuous), 10=case3(enc), 11=case4(enc+sign)
+            const sameDataFlag = mc & 1;
+            let regionCount = 2;
+            if (colorCountBits === 2) regionCount = 3; // 10 = 4色 = 3-region
+            if (colorCountBits === 3) regionCount = 4; // 11 = 8色 = 4-region
+            return {
+                qrNo,
+                regionCount,
+                colorCountBits,
+                colorSpecBits,
+                dataCompBits,
+                sameDataFlag
+            };
+        }
+
+        // ★ 新カラー符号化モード結果画面表示
+        function showNewColorResult(q1Text, q2Text, q3Text, q4Text, mgmtInfo) {
+            if (navigator.vibrate) navigator.vibrate([100, 50, 100]);
+            isScanning = false;
+
+            const regionCount = mgmtInfo ? mgmtInfo.regionCount : 3;
+            const dataComp = mgmtInfo ? mgmtInfo.dataCompBits : 0;
+            const isContinuous = (dataComp === 1); // ケース2: 連続データ
+
+            // タイトル更新
+            const titleEl = document.getElementById('newColorResultTitle');
+            if (regionCount === 4) {
+                titleEl.innerText = '新カラー符号化 読取り結果（4領域化・8色）';
+            } else {
+                titleEl.innerText = '新カラー符号化 読取り結果（3領域化・4色）';
+            }
+
+            // 領域情報
+            const infoEl = document.getElementById('newColorRegionInfo');
+            const compLabels = ['通常', '連続データ', 'ユーザ暗号化', '暗号化+署名'];
+            infoEl.innerText = regionCount + '領域 / データ構成: ' + (compLabels[dataComp] || '不明');
+
+            // 第4QRカードの表示制御
+            document.getElementById('newColorRes4Card').style.display = (regionCount === 4) ? '' : 'none';
+
+            // 連続データ表示制御
+            const contCard = document.getElementById('newColorContinuousCard');
+            if (isContinuous) {
+                // 全QRデータを結合
+                let combined = (q1Text || '') + (q2Text || '') + (q3Text || '');
+                if (regionCount === 4) combined += (q4Text || '');
+                document.getElementById('newColorResContinuous').innerText = combined || '-';
+                contCard.style.display = '';
+            } else {
+                contCard.style.display = 'none';
+            }
+
+            // 個別QRデータ表示
+            document.getElementById('newColorRes1').innerText = q1Text || '-';
+            document.getElementById('newColorRes2').innerText = q2Text || '(未読取)';
+            document.getElementById('newColorRes3').innerText = q3Text || '(未読取)';
+            document.getElementById('newColorRes4').innerText = q4Text || '(未読取)';
+
+            document.getElementById('newColorResultScreen').style.display = 'flex';
+        }
+
         // --- Main Scan Loop ---
         async function scanLoop() {
             if (!isScanning) return;
@@ -2045,6 +2169,208 @@
                 lastDetectTime = now;
 
                 try {
+                    // === 新カラー符号化モード ===
+                    if (scanMode === 'new_color_enc') {
+                        // 新カラー符号化モード: 第1QR（白黒、ツインの表面）を通常読取りし、
+                        // 管理ビットから3領域/4領域を判別する。
+                        // カラー部分（第2QR以降）はカメラからの色分離で読取る。
+
+                        const vw = video.videoWidth;
+                        const vh = video.videoHeight;
+
+                        if (newColorScanStage === 0) {
+                            // Stage 0: 第1QRを探索
+                            // ネイティブBarcodeDetector + jsQRハイブリッド
+                            let q1Found = null;
+
+                            if (barcodeDetector) {
+                                try {
+                                    const barcodes = await barcodeDetector.detect(video);
+                                    if (barcodes && barcodes.length > 0) {
+                                        for (const b of barcodes) {
+                                            const bbox = b.boundingBox;
+                                            const PADDING = Math.max(50, Math.floor(bbox.width * 0.5));
+                                            const sx = Math.max(0, Math.floor(bbox.x) - PADDING);
+                                            const sy = Math.max(0, Math.floor(bbox.y) - PADDING);
+                                            const sw = Math.min(vw - sx, Math.ceil(bbox.width) + PADDING * 2);
+                                            const sh = Math.min(vh - sy, Math.ceil(bbox.height) + PADDING * 2);
+                                            zxingCanvas.width = sw;
+                                            zxingCanvas.height = sh;
+                                            zxingCtx.drawImage(video, sx, sy, sw, sh, 0, 0, sw, sh);
+                                            const imgData = zxingCtx.getImageData(0, 0, sw, sh);
+                                            const res = jsQR(imgData.data, sw, sh, { inversionAttempts: 'attemptBoth' });
+                                            if (res && res.data && !res.isRaw) {
+                                                const topBit = ((res.managementCode || 0) >>> 15) & 1;
+                                                if (topBit === 0) {
+                                                    q1Found = res;
+                                                    // 領域を保存
+                                                    lastTwinBBox = {
+                                                        x: sx, y: sy, width: sw, height: sh
+                                                    };
+                                                    break;
+                                                }
+                                            }
+                                        }
+                                    }
+                                } catch(e) { /* ignore */ }
+                            }
+
+                            // BarcodeDetectorで見つからなかった場合、フルスクリーンjsQR
+                            if (!q1Found) {
+                                zxingCanvas.width = vw;
+                                zxingCanvas.height = vh;
+                                zxingCtx.drawImage(video, 0, 0, vw, vh);
+                                const fullData = zxingCtx.getImageData(0, 0, vw, vh);
+                                const res = jsQR(fullData.data, vw, vh, { inversionAttempts: 'attemptBoth' });
+                                if (res && res.data && !res.isRaw) {
+                                    const topBit = ((res.managementCode || 0) >>> 15) & 1;
+                                    if (topBit === 0) {
+                                        q1Found = res;
+                                        if (res.location) {
+                                            const pts = [
+                                                res.location.topLeftCorner, res.location.topRightCorner,
+                                                res.location.bottomRightCorner, res.location.bottomLeftCorner
+                                            ].filter(Boolean);
+                                            if (pts.length === 4) {
+                                                const xs = pts.map(p => p.x);
+                                                const ys = pts.map(p => p.y);
+                                                lastTwinBBox = {
+                                                    x: Math.min(...xs), y: Math.min(...ys),
+                                                    width: Math.max(...xs) - Math.min(...xs),
+                                                    height: Math.max(...ys) - Math.min(...ys)
+                                                };
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+
+                            if (q1Found) {
+                                const mgmtInfo = parseNewColorMgmt(q1Found.managementCode);
+                                if (!mgmtInfo || mgmtInfo.regionCount < 3) {
+                                    // 2色（通常モード）のQRを検出した場合、新カラーモードではないので無視
+                                    statusText.innerText = "カラーQRツインの第1QRを探索中... (通常QR検出、スキップ)";
+                                } else {
+                                    // 読取期限チェック
+                                    if (q1Found.expiryExt32 !== undefined && !checkExpiry(q1Found.expiryExt32)) {
+                                        isScanning = false; isProcessing = false;
+                                        showResultScreen(null, "読み取りの有効期間が終了しました");
+                                        return;
+                                    }
+                                    // 読取者IDチェック
+                                    if (q1Found.readerIdExt32 !== undefined) {
+                                        if (currentReaderIdHash === null || (q1Found.readerIdExt32 >>> 0) !== (currentReaderIdHash >>> 0)) {
+                                            isScanning = false; isProcessing = false;
+                                            showResultScreen(null, "読取者IDが一致しません");
+                                            return;
+                                        }
+                                    }
+                                    // 読取位置チェック
+                                    if (q1Found.locationLatExt24 !== undefined && q1Found.locationLonExt24 !== undefined) {
+                                        const locMatch = await checkLocation(q1Found.locationLatExt24, q1Found.locationLonExt24);
+                                        if (!locMatch) {
+                                            isScanning = false; isProcessing = false;
+                                            showResultScreen(null, "読取位置が一致しません");
+                                            return;
+                                        }
+                                    }
+                                    // 市町村コードチェック
+                                    if (q1Found.municipalityExt24 !== undefined) {
+                                        const muniMatch = await checkMunicipality(q1Found.municipalityExt24);
+                                        if (!muniMatch) {
+                                            isScanning = false; isProcessing = false;
+                                            showResultScreen(null, "市町村コードが一致しません");
+                                            return;
+                                        }
+                                    }
+
+                                    newColorQ1Data = {
+                                        text: q1Found.data,
+                                        managementCode: q1Found.managementCode,
+                                        mgmtInfo: mgmtInfo,
+                                        creationDateTimeExt32: q1Found.creationDateTimeExt32,
+                                        codewords: q1Found.codewords,
+                                        dataBytes: q1Found.dataBytes
+                                    };
+                                    newColorScanStage = 1;
+                                    const rStr = mgmtInfo.regionCount === 4 ? '4領域化(8色)' : '3領域化(4色)';
+                                    statusText.innerText = '第1QR検出: ' + rStr + ' / 第2QR以降を探索中...';
+                                    if (navigator.vibrate) navigator.vibrate([40, 30, 40]);
+
+                                    // 描画: Q1のバウンディングボックス
+                                    if (q1Found.location) {
+                                        const pts = [
+                                            q1Found.location.topLeftCorner, q1Found.location.topRightCorner,
+                                            q1Found.location.bottomRightCorner, q1Found.location.bottomLeftCorner
+                                        ].filter(Boolean);
+                                        if (pts.length === 4) drawBoundingBox(pts, '#00E676');
+                                    }
+                                }
+                            }
+
+                        } else if (newColorScanStage === 1 && newColorQ1Data) {
+                            // Stage 1: カラーQR部分（第2QR以降）を色分離で探索
+                            // QRツインのカラー側を読取る
+                            // 第2QR(180°回転) のシステム暗号化有無を確認
+                            const mgmtInfo = newColorQ1Data.mgmtInfo;
+
+                            // 色分離QR読取り: カラーQR領域のフレームを取得してjsQRで解析
+                            // ツインの第2QR側（180°回転 + シフト位置）を探す
+                            let q2Data = null, q3Data = null, q4Data = null;
+
+                            // まず通常のjsQRでツイン内の第2QRを探す（システム暗号化されていないQR）
+                            zxingCanvas.width = vw;
+                            zxingCanvas.height = vh;
+                            zxingCtx.drawImage(video, 0, 0, vw, vh);
+                            const fullData = zxingCtx.getImageData(0, 0, vw, vh);
+
+                            // multi=trueで全てのQRを検出
+                            let resList = jsQR(fullData.data, vw, vh, {
+                                inversionAttempts: 'attemptBoth',
+                                multi: true
+                            });
+                            if (resList && !Array.isArray(resList)) resList = [resList];
+
+                            if (resList) {
+                                for (const res of resList) {
+                                    if (!res || !res.data || res.isRaw) continue;
+                                    const topBit = ((res.managementCode || 0) >>> 15) & 1;
+                                    if (topBit === 1 && !q2Data) {
+                                        q2Data = res.data;
+                                    }
+                                }
+                            }
+
+                            // 第2QRが見つかったら、まだ第3QR/第4QRは色分離が必要
+                            // 現在の実装では第2QRのみツインから通常読取り可能
+                            // 第3QR/第4QRは色領域にオーバーレイされているため、
+                            // 色分離ロジックが必要（将来の拡張）
+
+                            if (q2Data) {
+                                // ひとまず第2QRだけが見つかった場合の結果を表示
+                                // 完全な色分離読取りは今後の実装で対応
+                                statusText.innerText = '第2QR検出済み。結果を表示します...';
+
+                                // 結果表示
+                                showNewColorResult(
+                                    newColorQ1Data.text,
+                                    q2Data,
+                                    q3Data, // null: 色分離未実装
+                                    q4Data, // null: 色分離未実装
+                                    mgmtInfo
+                                );
+                                isProcessing = false;
+                                return;
+                            } else {
+                                statusText.innerText = '第1QR検出済み / 第2QR以降を探索中...';
+                            }
+                        }
+
+                        isProcessing = false;
+                        if (isScanning) requestAnimationFrame(scanLoop);
+                        return;
+                    }
+
                     // === Color QR Twin Mode (focused scan + fast RGB projection) ===
                     if (scanMode === 'color_enc') {
                         colorScanAttemptCount++;
