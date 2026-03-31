@@ -386,6 +386,8 @@ function scan(matrix, options) {
                     chunks: decoded.chunks,
                     version: decoded.version,
                     managementCode: decoded.managementCode,
+                    managementCode32: decoded.managementCode32,
+                    managementFlags16: decoded.managementFlags16,
                     creationDateTimeExt32: decoded.creationDateTimeExt32,
                     managementExt32: decoded.managementExt32,
                     expiryExt32: decoded.expiryExt32,
@@ -10356,5 +10358,6 @@ function findAlignmentPattern(matrix, alignmentPatternQuads, topRight, topLeft, 
 /***/ })
 /******/ ])["default"];
 });
+
 
 

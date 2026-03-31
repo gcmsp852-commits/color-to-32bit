@@ -589,6 +589,7 @@
                     currentHash = await sha256BytesAsync(currentHash);
                 }
             }
+
             return result;
         }
 
@@ -608,6 +609,7 @@
                     currentHash = await sha256BytesAsync(currentHash);
                 }
             }
+
             return result;
         }
 
@@ -2090,6 +2092,7 @@
             if (!result.qr1 && !result.qr2 && !result.qr3 && !result.qr4) {
                 return detectedBBox ? { bbox: detectedBBox } : null;
             }
+
             return result;
         }
 
@@ -2729,14 +2732,16 @@
                     );
                     if (qr2Synth) result.qr2 = qr2Synth.data;
                 }
-                if ((!existingResult || !existingResult.qr3) && decoder.states && projectedBuffers[1]) {
+                const hasQ3Seed = !!(result._q2Seed || (existingResult && existingResult._q2Seed));
+                if (hasQ3Seed && (!existingResult || !existingResult.qr3) && decoder.states && projectedBuffers[1]) {
                     const qr3Synth = decodeSyntheticNewColorQr(
                         buildBitMatrixFromColorStates(sampledStates, decoder.states, 1),
                         0
                     );
                     if (qr3Synth) result.qr3 = qr3Synth.data;
                 }
-                if (q1Data.mgmtInfo.regionCount === 4 && (!existingResult || !existingResult.qr4) && decoder.states && projectedBuffers[2]) {
+                const hasQ4Seed = !!(result._q4Seed || (existingResult && existingResult._q4Seed));
+                if (hasQ4Seed && q1Data.mgmtInfo.regionCount === 4 && (!existingResult || !existingResult.qr4) && decoder.states && projectedBuffers[2]) {
                     const qr4Synth = decodeSyntheticNewColorQr(
                         buildBitMatrixFromColorStates(sampledStates, decoder.states, 2),
                         1
@@ -2860,6 +2865,10 @@
                         result._q4Seed = qr4;
                     }
                 }
+            }
+
+            if (q1Data.mgmtInfo && q1Data.mgmtInfo.dataCompBits === 0 && result.qr3 && q1Data.text && result.qr3 === q1Data.text) {
+                result.qr3 = null;
             }
 
             return result;
@@ -3779,6 +3788,10 @@
     </script>
 </body>
 </html>
+
+
+
+
 
 
 
