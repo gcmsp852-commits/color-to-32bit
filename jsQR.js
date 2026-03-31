@@ -1,4 +1,4 @@
-(function webpackUniversalModuleDefinition(root, factory) {
+﻿(function webpackUniversalModuleDefinition(root, factory) {
 	if(typeof exports === 'object' && typeof module === 'object')
 		module.exports = factory();
 	else if(typeof define === 'function' && define.amd)
@@ -1181,29 +1181,30 @@ function decode(data, version) {
             // 管理部16bit + 終端4bit (合計20bit) が残っているか確認
             if (stream.available() >= 20) {
                 // 管理部16ビットを読み取って result に保存
-                result.managementCode = stream.readBits(16);
-                // 拡張管理部: 作成日時(bit4=0x0010), 読取期限(bit3=0x0008), 読取者ID(bit2=0x0004), 画像データID(bit1=0x0002), 読取位置(bit0=0x0001)
-                // 符号化色数(bit14-13): 01の場合、市町村コード24bitあり
-                // 順番: 作成日時32bit → 読取期限32bit → 読取者ID32bit → 画像データID32bit → 読取位置48bit → 市町村コード24bit
+                var managementHigh16 = stream.readBits(16);
+                var managementLow16 = stream.available() >= 16 ? stream.readBits(16) : 0;
+                result.managementCode = managementHigh16;
+                result.managementCode32 = (((managementHigh16 & 0xFFFF) << 16) | (managementLow16 & 0xFFFF)) >>> 0;
+                result.managementFlags16 = managementLow16 & 0xFFFF;
                 var extBlockCount = 0;
-                if ((result.managementCode & 0x0010) !== 0) extBlockCount++; // 作成日時
-                if ((result.managementCode & 0x0008) !== 0) extBlockCount++; // 読取期限
-                if ((result.managementCode & 0x0004) !== 0) extBlockCount++; // 読取者ID
-                if ((result.managementCode & 0x0002) !== 0) extBlockCount++; // 画像データID
-                var hasLocation = (result.managementCode & 0x0001) !== 0;    // 読取位置
-                var hasMunicipality = ((result.managementCode & 0x6000) === 0x2000); // 符号化色数=01 → 市町村コードあり
-                var extBitsNeeded = extBlockCount * 32 + (hasLocation ? 48 : 0) + (hasMunicipality ? 24 : 0) + 4; // + 終端4bit
+                if ((result.managementFlags16 & 0x0400) !== 0) extBlockCount++;
+                if ((result.managementFlags16 & 0x0200) !== 0) extBlockCount++;
+                if ((result.managementFlags16 & 0x0100) !== 0) extBlockCount++;
+                if ((result.managementFlags16 & 0x0080) !== 0) extBlockCount++;
+                var hasLocation = (result.managementFlags16 & 0x0040) !== 0;
+                var hasMunicipality = (result.managementFlags16 & 0x0020) !== 0;
+                var extBitsNeeded = extBlockCount * 32 + (hasLocation ? 48 : 0) + (hasMunicipality ? 24 : 0) + 4;
                 if ((extBlockCount > 0 || hasLocation || hasMunicipality) && stream.available() >= extBitsNeeded) {
-                    if ((result.managementCode & 0x0010) !== 0) {
+                    if ((result.managementFlags16 & 0x0400) !== 0) {
                         result.creationDateTimeExt32 = stream.readBits(32);
                     }
-                    if ((result.managementCode & 0x0008) !== 0) {
+                    if ((result.managementFlags16 & 0x0200) !== 0) {
                         result.expiryExt32 = stream.readBits(32);
                     }
-                    if ((result.managementCode & 0x0004) !== 0) {
+                    if ((result.managementFlags16 & 0x0100) !== 0) {
                         result.readerIdExt32 = stream.readBits(32);
                     }
-                    if ((result.managementCode & 0x0002) !== 0) {
+                    if ((result.managementFlags16 & 0x0080) !== 0) {
                         result.managementExt32 = stream.readBits(32);
                     }
                     if (hasLocation) {
@@ -10355,3 +10356,5 @@ function findAlignmentPattern(matrix, alignmentPatternQuads, topRight, topLeft, 
 /***/ })
 /******/ ])["default"];
 });
+
+
