@@ -2421,7 +2421,8 @@
                                         mgmtInfo: mgmtInfo,
                                         creationDateTimeExt32: q1Found.creationDateTimeExt32,
                                         codewords: q1Found.codewords,
-                                        dataBytes: q1Found.dataBytes
+                                        dataBytes: q1Found.dataBytes,
+                                        location: q1Found.location // locator erasing に必須
                                     };
 
                                     const isAppEnc = (mgmtInfo.dataCompBits === 2) || (mgmtInfo.dataCompBits === 3); // 暗号化, 暗号化+署名
@@ -2486,23 +2487,55 @@
                             // ピクセル単位の色分離を実行
                             const { q2img, q3img, q4img } = splitNewColorQRs(cropData.data, sw, sh, mgmtInfo.regionCount, mgmtInfo.colorSpecBits);
 
-                            // jsQR オプション
+                            // ★ Q1のFinder Patternを白塗りで破壊し、jsQRが誤ってQ1を検出しないようにする
+                            function eraseQ1Finders(imgDataArray) {
+                                if (!newColorQ1Data.location) return;
+                                const tl = { x: newColorQ1Data.location.topLeftCorner.x - sx, y: newColorQ1Data.location.topLeftCorner.y - sy };
+                                const tr = { x: newColorQ1Data.location.topRightCorner.x - sx, y: newColorQ1Data.location.topRightCorner.y - sy };
+                                const bl = { x: newColorQ1Data.location.bottomLeftCorner.x - sx, y: newColorQ1Data.location.bottomLeftCorner.y - sy };
+                                
+                                const w = Math.hypot(tr.x - tl.x, tr.y - tl.y);
+                                const h = Math.hypot(bl.x - tl.x, bl.y - tl.y);
+                                const rSq = (Math.max(w, h) * 0.35) ** 2; // Q1の対角数モジュール分だけ消去（Q2には届かない）
+                                
+                                for (let y = 0; y < sh; y++) {
+                                    for (let x = 0; x < sw; x++) {
+                                        const dTl = (x - tl.x)**2 + (y - tl.y)**2;
+                                        const dTr = (x - tr.x)**2 + (y - tr.y)**2;
+                                        const dBl = (x - bl.x)**2 + (y - bl.y)**2;
+                                        if (dTl < rSq || dTr < rSq || dBl < rSq) {
+                                            const idx = (y * sw + x) * 4;
+                                            imgDataArray[idx] = 255;
+                                            imgDataArray[idx+1] = 255;
+                                            imgDataArray[idx+2] = 255;
+                                        }
+                                    }
+                                }
+                            }
+
+                            if (newColorQ1Data.location) {
+                                eraseQ1Finders(q2img);
+                                eraseQ1Finders(q3img);
+                                if (q4img) eraseQ1Finders(q4img);
+                            }
+
+                            // jsQR オプション: multiをfalseにして高速に。Q1は破壊済なのでQ2+が一瞬で見つかる
                             const opts = { inversionAttempts: "attemptBoth", multi: false };
                             if (appMask) {
-                                opts.appEncMask = Array.from(appMask); // パスワードから生成したXORマスクを渡す
+                                opts.appEncMask = Array.from(appMask); // パスワードマスク
                             }
 
                             // 各QR画像をデコード
                             let q2Data = null, q3Data = null, q4Data = null;
                             const res2 = jsQR(q2img, sw, sh, opts);
-                            if (res2 && res2.data && !res2.isRaw) q2Data = res2.data;
+                            if (res2 && res2.data && !res2.isRaw && (((res2.managementCode || 0) >>> 15) & 1) === 1) q2Data = res2.data;
 
                             const res3 = jsQR(q3img, sw, sh, opts);
-                            if (res3 && res3.data && !res3.isRaw) q3Data = res3.data;
+                            if (res3 && res3.data && !res3.isRaw && (((res3.managementCode || 0) >>> 15) & 1) === 1) q3Data = res3.data;
 
                             if (mgmtInfo.regionCount === 4 && q4img) {
                                 const res4 = jsQR(q4img, sw, sh, opts);
-                                if (res4 && res4.data && !res4.isRaw) q4Data = res4.data;
+                                if (res4 && res4.data && !res4.isRaw && (((res4.managementCode || 0) >>> 15) & 1) === 1) q4Data = res4.data;
                             }
 
                             // すべてのQRの読取りが完了したかチェック
