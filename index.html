@@ -2499,70 +2499,41 @@
                             // ピクセル単位の色分離を実行
                             const { q2img, q3img, q4img } = splitNewColorQRs(cropData.data, sw, sh, mgmtInfo.regionCount, mgmtInfo.colorSpecBits);
 
-                            // ★ 参考コードの手法を採用：正確なモジュールサイズを計算して、第1QRのファインダーのみを確実に切り落とす
-                            function estimateModuleSize(qrLoc, version) {
-                                if (!qrLoc || typeof version !== 'number') return null;
-                                const modules = 17 + 4 * version;
-                                const tl = qrLoc.topLeftCorner, tr = qrLoc.topRightCorner, bl = qrLoc.bottomLeftCorner;
-                                if (!tl || !tr || !bl) return null;
-                                const top = Math.hypot(tr.x - tl.x, tr.y - tl.y);
-                                const left = Math.hypot(bl.x - tl.x, bl.y - tl.y);
-                                return ((top + left) / 2) / modules;
-                            }
-
-                            function getCroppedSubArray(srcData, width, height, shiftX, shiftY) {
-                                if (shiftX <= 0 && shiftY <= 0) return { data: srcData, w: width, h: height };
-                                const outW = width - shiftX;
-                                const outH = height - shiftY;
-                                if (outW <= 10 || outH <= 10) return { data: srcData, w: width, h: height };
-                                const out = new Uint8ClampedArray(outW * outH * 4);
-                                out.fill(255); // 白で埋める
-
-                                const rowBytes = outW * 4;
-                                for (let y = 0; y < outH; y++) {
-                                    const srcOffset = ((y + shiftY) * width + shiftX) * 4;
-                                    const outOffset = y * rowBytes;
-                                    // 1行ずつ部分配列としてコピー（高速）
-                                    out.set(srcData.subarray(srcOffset, srcOffset + rowBytes), outOffset);
-                                }
-                                return { data: out, w: outW, h: outH };
-                            }
-
-                            let shiftPx = 0;
-                            if (newColorQ1Data.location && newColorQ1Data.version) {
-                                const modPx = estimateModuleSize(newColorQ1Data.location, newColorQ1Data.version);
-                                if (modPx) {
-                                    // Q2は8.5モジュールずれるため、8.0モジュール分カットすればQ1のファインダー(7)だけ消えQ2の(8.5)は残る
-                                    shiftPx = Math.max(1, Math.round(modPx * 8.0));
-                                }
-                            }
-                            // フォールバック（念のための安全策）
-                            if (shiftPx === 0) shiftPx = Math.max(1, Math.floor(sw * 0.15));
-
-                            const crop2 = getCroppedSubArray(q2img, sw, sh, shiftPx, shiftPx);
-                            const crop3 = getCroppedSubArray(q3img, sw, sh, shiftPx, shiftPx);
-                            const crop4 = q4img ? getCroppedSubArray(q4img, sw, sh, shiftPx, shiftPx) : null;
-
-                            // jsQR オプション: multiをfalseにして最速パスを実行。Q1は完全に枠外になったのでQ2+が一瞬で見つかる
-                            const opts = { inversionAttempts: "dontInvert", multi: false }; // 生成済み白黒画像なのでdontInvertで十分
+                            // ★ 全く新しいロジック（画像操作を完全に排除し、jsQRのマルチスキャン機能に委ねる堅牢な手法）
+                            // 幾何学的な消去やクロップはカメラのパース歪みや回転、パディング量に弱く実用レベルで失敗しやすいため、
+                            // クロップ済みの純粋なバイナリ画像 (q2img, q3img...) の中から「存在するQRコードをすべて」検索させ（multi: true）、
+                            // その中から管理ビット（topBit === 1）が合致する標的のQRデータのみを確実に抽出する堅牢モデルに変更します。
+                            
+                            const opts = { inversionAttempts: "dontInvert", multi: true }; // 生成済み白黒画像なのでdontInvertで十分高速
                             if (appMask) {
                                 opts.appEncMask = Array.from(appMask); // パスワードマスク
                             }
 
+                            // 配列として返ってくるデコード結果の中から対象を探し出すヘルパー関数
+                            function extractQxData(imgData) {
+                                if (!imgData) return null;
+                                const resList = jsQR(imgData, sw, sh, opts);
+                                if (!resList) return null;
+                                const items = Array.isArray(resList) ? resList : [resList];
+                                for (const r of items) {
+                                    if (r && r.data && !r.isRaw && (((r.managementCode || 0) >>> 15) & 1) === 1) {
+                                        return r.data;
+                                    }
+                                }
+                                return null;
+                            }
+
                             // 各QR画像をデコード（すでに取得済みの場合はスキップして永続化）
                             if (!newColorQ2Data) {
-                                const res2 = jsQR(crop2.data, crop2.w, crop2.h, opts);
-                                if (res2 && res2.data && !res2.isRaw && (((res2.managementCode || 0) >>> 15) & 1) === 1) newColorQ2Data = res2.data;
+                                newColorQ2Data = extractQxData(q2img);
                             }
 
                             if (!newColorQ3Data) {
-                                const res3 = jsQR(crop3.data, crop3.w, crop3.h, opts);
-                                if (res3 && res3.data && !res3.isRaw && (((res3.managementCode || 0) >>> 15) & 1) === 1) newColorQ3Data = res3.data;
+                                newColorQ3Data = extractQxData(q3img);
                             }
 
-                            if (mgmtInfo.regionCount === 4 && crop4 && !newColorQ4Data) {
-                                const res4 = jsQR(crop4.data, crop4.w, crop4.h, opts);
-                                if (res4 && res4.data && !res4.isRaw && (((res4.managementCode || 0) >>> 15) & 1) === 1) newColorQ4Data = res4.data;
+                            if (mgmtInfo.regionCount === 4 && q4img && !newColorQ4Data) {
+                                newColorQ4Data = extractQxData(q4img);
                             }
 
                             // すべてのQRの読取りが完了したかチェック
