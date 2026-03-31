@@ -309,6 +309,11 @@
         let digitalSignStage3 = false; // 電子署名モードの第2QR（もしくはペア）探索中フラグ
         let lastTwinBBox = null; // ★ Stage 1で検出したツインQRの領域を保存
 
+        // ★ 新カラーQR用の永続的保持データ（フレーム間で結果を跨ぐため）
+        let newColorQ2Data = null;
+        let newColorQ3Data = null;
+        let newColorQ4Data = null;
+
         // ★ 読取者IDログインシステム
         let currentReaderIdHash = null; // ログイン中の読取者IDハッシュ(32bit)
 
@@ -1073,6 +1078,9 @@
             // ★ カラープロファイルキャッシュをクリア（色設定が変わった場合に備える）
             cachedColorProfileKey = '';
             cachedColorProfiles = null;
+            newColorQ2Data = null;
+            newColorQ3Data = null;
+            newColorQ4Data = null;
 
             isScanning = true;
 
@@ -2424,6 +2432,9 @@
                                         dataBytes: q1Found.dataBytes,
                                         location: q1Found.location // locator erasing に必須
                                     };
+                                    newColorQ2Data = null;
+                                    newColorQ3Data = null;
+                                    newColorQ4Data = null;
 
                                     const isAppEnc = (mgmtInfo.dataCompBits === 2) || (mgmtInfo.dataCompBits === 3); // 暗号化, 暗号化+署名
                                     if (isAppEnc && !appMask) {
@@ -2525,24 +2536,27 @@
                                 opts.appEncMask = Array.from(appMask); // パスワードマスク
                             }
 
-                            // 各QR画像をデコード
-                            let q2Data = null, q3Data = null, q4Data = null;
-                            const res2 = jsQR(q2img, sw, sh, opts);
-                            if (res2 && res2.data && !res2.isRaw && (((res2.managementCode || 0) >>> 15) & 1) === 1) q2Data = res2.data;
+                            // 各QR画像をデコード（すでに取得済みの場合はスキップして永続化）
+                            if (!newColorQ2Data) {
+                                const res2 = jsQR(q2img, sw, sh, opts);
+                                if (res2 && res2.data && !res2.isRaw && (((res2.managementCode || 0) >>> 15) & 1) === 1) newColorQ2Data = res2.data;
+                            }
 
-                            const res3 = jsQR(q3img, sw, sh, opts);
-                            if (res3 && res3.data && !res3.isRaw && (((res3.managementCode || 0) >>> 15) & 1) === 1) q3Data = res3.data;
+                            if (!newColorQ3Data) {
+                                const res3 = jsQR(q3img, sw, sh, opts);
+                                if (res3 && res3.data && !res3.isRaw && (((res3.managementCode || 0) >>> 15) & 1) === 1) newColorQ3Data = res3.data;
+                            }
 
-                            if (mgmtInfo.regionCount === 4 && q4img) {
+                            if (mgmtInfo.regionCount === 4 && q4img && !newColorQ4Data) {
                                 const res4 = jsQR(q4img, sw, sh, opts);
-                                if (res4 && res4.data && !res4.isRaw && (((res4.managementCode || 0) >>> 15) & 1) === 1) q4Data = res4.data;
+                                if (res4 && res4.data && !res4.isRaw && (((res4.managementCode || 0) >>> 15) & 1) === 1) newColorQ4Data = res4.data;
                             }
 
                             // すべてのQRの読取りが完了したかチェック
                             let allFound = false;
-                            if (mgmtInfo.regionCount === 3 && q2Data && q3Data) {
+                            if (mgmtInfo.regionCount === 3 && newColorQ2Data && newColorQ3Data) {
                                 allFound = true;
-                            } else if (mgmtInfo.regionCount === 4 && q2Data && q3Data && q4Data) {
+                            } else if (mgmtInfo.regionCount === 4 && newColorQ2Data && newColorQ3Data && newColorQ4Data) {
                                 allFound = true;
                             }
 
@@ -2550,9 +2564,9 @@
                                 statusText.innerText = '全QRデータを分離完了。結果を表示します...';
                                 showNewColorResult(
                                     newColorQ1Data.text,
-                                    q2Data,
-                                    q3Data,
-                                    q4Data,
+                                    newColorQ2Data,
+                                    newColorQ3Data,
+                                    newColorQ4Data,
                                     mgmtInfo
                                 );
                                 isProcessing = false;
@@ -2560,12 +2574,10 @@
                             } else {
                                 // 見つかった数に応じてステータス更新
                                 let foundCount = 1; // Q1は検出済
-                                if (q2Data) foundCount++;
-                                if (q3Data) foundCount++;
-                                if (q4Data) foundCount++;
+                                if (newColorQ2Data) foundCount++;
+                                if (newColorQ3Data) foundCount++;
+                                if (newColorQ4Data) foundCount++;
                                 statusText.innerText = 'カラー分離探索中... (検出: ' + foundCount + '/' + mgmtInfo.regionCount + ') ' + (sx===0 ? '(全画面)' : '(クロップ済)');
-                                
-                                // デバッグ描画: Q2の探索状態を可視化（クロップ領域を赤枠で囲む等も可能だが省略）
                             }
                         }
 
