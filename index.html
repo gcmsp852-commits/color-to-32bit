@@ -2150,6 +2150,137 @@
             document.getElementById('newColorResultScreen').style.display = 'flex';
         }
 
+        // ★ 新カラー符号化: ピクセルごとの色分離ロジック
+        function splitNewColorQRs(src, width, height, regionCount, colorSpecBits) {
+            const pixelCount = width * height;
+            const len4 = pixelCount * 4;
+            
+            const q2img = new Uint8ClampedArray(len4);
+            const q3img = new Uint8ClampedArray(len4);
+            const q4img = regionCount === 4 ? new Uint8ClampedArray(len4) : null;
+            
+            // Alpha初期化
+            for(let i=3; i<len4; i+=4) {
+                q2img[i] = 255;
+                q3img[i] = 255;
+                if (q4img) q4img[i] = 255;
+            }
+
+            // 色名からRGB値を取得するヘルパー
+            function getCol(name) {
+                const MULTICOLOR_RGB = {
+                    black: {r:0, g:0, b:0}, blue: {r:0, g:0, b:255}, red: {r:255, g:0, b:0}, purple: {r:255, g:0, b:255},
+                    yellow: {r:255, g:255, b:0}, cyan: {r:0, g:255, b:255}, green: {r:0, g:255, b:0}, white: {r:255, g:255, b:255}
+                };
+                return MULTICOLOR_RGB[name];
+            }
+
+            if (regionCount === 3) {
+                // 3領域(4色) 色指定ビットから使用色を復元
+                const colorsList = ["black", "blue", "red", "purple", "yellow", "cyan", "green", "white"];
+                const activeColors = [];
+                for (let i = 0; i < 8; i++) {
+                    if ((colorSpecBits >>> (7 - i)) & 1) activeColors.push(colorsList[i]);
+                }
+                
+                const darkNames = ["black", "blue", "red", "purple"];
+                const lightNames = ["white", "green", "cyan", "yellow"]; // 明色の優先度(高→低は green,cyan,yellow,white だが実装に合わせる)
+                
+                const activeDark = activeColors.filter(c => darkNames.includes(c));
+                const activeLight = activeColors.filter(c => lightNames.includes(c));
+                
+                // Generator側の優先順位に合わせた厳密な分類: 
+                // 暗高: 黒 > 青 > 赤 > 紫, 暗低: 黒以外で低い方 
+                let darkHigh, darkLow;
+                if (activeDark.includes("black")) {
+                    darkHigh = "black";
+                    darkLow = activeDark.find(c => c !== "black") || "purple";
+                } else {
+                    const darkPri = ["blue", "red", "purple"];
+                    activeDark.sort((a,b) => darkPri.indexOf(a) - darkPri.indexOf(b));
+                    darkHigh = activeDark[0] || "blue";
+                    darkLow = activeDark[1] || "purple";
+                }
+
+                // 明高: 白以外で高い方 (緑 > 水色 > 黄色), 明低: 白
+                let lightHigh, lightLow;
+                if (activeLight.includes("white")) {
+                    lightHigh = activeLight.find(c => c !== "white") || "green";
+                    lightLow = "white";
+                } else {
+                    const lightPri = ["green", "cyan", "yellow"];
+                    activeLight.sort((a,b) => lightPri.indexOf(a) - lightPri.indexOf(b));
+                    lightHigh = activeLight[0] || "green";
+                    lightLow = activeLight[1] || "yellow";
+                }
+
+                // マッピング: { colorName: [q2dark, q3dark] }
+                const map = {};
+                map[darkHigh] = [true, true];
+                map[darkLow] = [true, false];
+                map[lightHigh] = [false, true];
+                map[lightLow] = [false, false];
+
+                const colorKeys = [darkHigh, darkLow, lightHigh, lightLow];
+                const profiles = colorKeys.map(k => getCol(k));
+
+                for (let idx = 0; idx < len4; idx += 4) {
+                    const r = src[idx], g = src[idx+1], b = src[idx+2];
+                    let minDist = Infinity;
+                    let bestKeyIdx = 0;
+                    
+                    for (let i = 0; i < 4; i++) {
+                        const p = profiles[i];
+                        const dist = Math.abs(r - p.r) + Math.abs(g - p.g) + Math.abs(b - p.b);
+                        if (dist < minDist) {
+                            minDist = dist;
+                            bestKeyIdx = i;
+                        }
+                    }
+                    
+                    const [q2d, q3d] = map[colorKeys[bestKeyIdx]];
+                    const q2v = q2d ? 0 : 255;
+                    const q3v = q3d ? 0 : 255;
+                    
+                    q2img[idx] = q2v; q2img[idx+1] = q2v; q2img[idx+2] = q2v;
+                    q3img[idx] = q3v; q3img[idx+1] = q3v; q3img[idx+2] = q3v;
+                }
+
+            } else if (regionCount === 4) {
+                // 4領域(8色)
+                const mapKeys = ["black", "blue", "red", "purple", "green", "cyan", "yellow", "white"];
+                const profiles = mapKeys.map(k => getCol(k));
+                const q2m=[true,true,true,true,false,false,false,false];
+                const q3m=[true,true,false,false,true,true,false,false];
+                const q4m=[true,false,true,false,true,false,true,false];
+                
+                for (let idx = 0; idx < len4; idx += 4) {
+                    const r = src[idx], g = src[idx+1], b = src[idx+2];
+                    let minDist = Infinity;
+                    let bestKeyIdx = 7;
+                    
+                    for (let i = 0; i < 8; i++) {
+                        const p = profiles[i];
+                        const dist = Math.abs(r - p.r) + Math.abs(g - p.g) + Math.abs(b - p.b);
+                        if (dist < minDist) {
+                            minDist = dist;
+                            bestKeyIdx = i;
+                        }
+                    }
+                    
+                    const q2v = q2m[bestKeyIdx] ? 0 : 255;
+                    const q3v = q3m[bestKeyIdx] ? 0 : 255;
+                    const q4v = q4m[bestKeyIdx] ? 0 : 255;
+                    
+                    q2img[idx] = q2v; q2img[idx+1] = q2v; q2img[idx+2] = q2v;
+                    q3img[idx] = q3v; q3img[idx+1] = q3v; q3img[idx+2] = q3v;
+                    q4img[idx] = q4v; q4img[idx+1] = q4v; q4img[idx+2] = q4v;
+                }
+            }
+            
+            return { q2img, q3img, q4img };
+        }
+
         // --- Main Scan Loop ---
         async function scanLoop() {
             if (!isScanning) return;
@@ -2292,6 +2423,31 @@
                                         codewords: q1Found.codewords,
                                         dataBytes: q1Found.dataBytes
                                     };
+
+                                    const isAppEnc = (mgmtInfo.dataCompBits === 2) || (mgmtInfo.dataCompBits === 3); // 暗号化, 暗号化+署名
+                                    if (isAppEnc && !appMask) {
+                                        // ユーザ暗号化の場合はパスワード入力へ遷移
+                                        firstQR = newColorQ1Data;
+                                        document.getElementById('qr1PreviewText').innerText = firstQR.text;
+                                        document.getElementById('passwordScreen').style.display = 'flex';
+                                        isScanning = false;
+                                        isProcessing = false;
+                                        if (q1Found.location) {
+                                            const pts = [
+                                                q1Found.location.topLeftCorner, q1Found.location.topRightCorner,
+                                                q1Found.location.bottomRightCorner, q1Found.location.bottomLeftCorner
+                                            ].filter(Boolean);
+                                            if (pts.length === 4) {
+                                                lastTwinBBox = {
+                                                    x: Math.min(...pts.map(p=>p.x)), y: Math.min(...pts.map(p=>p.y)),
+                                                    width: Math.max(...pts.map(p=>p.x)) - Math.min(...pts.map(p=>p.x)),
+                                                    height: Math.max(...pts.map(p=>p.y)) - Math.min(...pts.map(p=>p.y))
+                                                };
+                                            }
+                                        }
+                                        return;
+                                    }
+
                                     newColorScanStage = 1;
                                     const rStr = mgmtInfo.regionCount === 4 ? '4領域化(8色)' : '3領域化(4色)';
                                     statusText.innerText = '第1QR検出: ' + rStr + ' / 第2QR以降を探索中...';
@@ -2310,59 +2466,73 @@
 
                         } else if (newColorScanStage === 1 && newColorQ1Data) {
                             // Stage 1: カラーQR部分（第2QR以降）を色分離で探索
-                            // QRツインのカラー側を読取る
-                            // 第2QR(180°回転) のシステム暗号化有無を確認
                             const mgmtInfo = newColorQ1Data.mgmtInfo;
 
-                            // 色分離QR読取り: カラーQR領域のフレームを取得してjsQRで解析
-                            // ツインの第2QR側（180°回転 + シフト位置）を探す
-                            let q2Data = null, q3Data = null, q4Data = null;
-
-                            // まず通常のjsQRでツイン内の第2QRを探す（システム暗号化されていないQR）
-                            zxingCanvas.width = vw;
-                            zxingCanvas.height = vh;
-                            zxingCtx.drawImage(video, 0, 0, vw, vh);
-                            const fullData = zxingCtx.getImageData(0, 0, vw, vh);
-
-                            // multi=trueで全てのQRを検出
-                            let resList = jsQR(fullData.data, vw, vh, {
-                                inversionAttempts: 'attemptBoth',
-                                multi: true
-                            });
-                            if (resList && !Array.isArray(resList)) resList = [resList];
-
-                            if (resList) {
-                                for (const res of resList) {
-                                    if (!res || !res.data || res.isRaw) continue;
-                                    const topBit = ((res.managementCode || 0) >>> 15) & 1;
-                                    if (topBit === 1 && !q2Data) {
-                                        q2Data = res.data;
-                                    }
-                                }
+                            // 探索範囲を絞って高速化＆色分離
+                            let sx = 0, sy = 0, sw = vw, sh = vh;
+                            if (lastTwinBBox) {
+                                const PADDING = Math.max(100, Math.floor(lastTwinBBox.width * 0.8));
+                                sx = Math.max(0, Math.floor(lastTwinBBox.x) - PADDING);
+                                sy = Math.max(0, Math.floor(lastTwinBBox.y) - PADDING);
+                                sw = Math.min(vw - sx, Math.ceil(lastTwinBBox.width) + PADDING * 2);
+                                sh = Math.min(vh - sy, Math.ceil(lastTwinBBox.height) + PADDING * 2);
                             }
 
-                            // 第2QRが見つかったら、まだ第3QR/第4QRは色分離が必要
-                            // 現在の実装では第2QRのみツインから通常読取り可能
-                            // 第3QR/第4QRは色領域にオーバーレイされているため、
-                            // 色分離ロジックが必要（将来の拡張）
+                            zxingCanvas.width = sw;
+                            zxingCanvas.height = sh;
+                            zxingCtx.drawImage(video, sx, sy, sw, sh, 0, 0, sw, sh);
+                            const cropData = zxingCtx.getImageData(0, 0, sw, sh);
 
-                            if (q2Data) {
-                                // ひとまず第2QRだけが見つかった場合の結果を表示
-                                // 完全な色分離読取りは今後の実装で対応
-                                statusText.innerText = '第2QR検出済み。結果を表示します...';
+                            // ピクセル単位の色分離を実行
+                            const { q2img, q3img, q4img } = splitNewColorQRs(cropData.data, sw, sh, mgmtInfo.regionCount, mgmtInfo.colorSpecBits);
 
-                                // 結果表示
+                            // jsQR オプション
+                            const opts = { inversionAttempts: "attemptBoth", multi: false };
+                            if (appMask) {
+                                opts.appEncMask = Array.from(appMask); // パスワードから生成したXORマスクを渡す
+                            }
+
+                            // 各QR画像をデコード
+                            let q2Data = null, q3Data = null, q4Data = null;
+                            const res2 = jsQR(q2img, sw, sh, opts);
+                            if (res2 && res2.data && !res2.isRaw) q2Data = res2.data;
+
+                            const res3 = jsQR(q3img, sw, sh, opts);
+                            if (res3 && res3.data && !res3.isRaw) q3Data = res3.data;
+
+                            if (mgmtInfo.regionCount === 4 && q4img) {
+                                const res4 = jsQR(q4img, sw, sh, opts);
+                                if (res4 && res4.data && !res4.isRaw) q4Data = res4.data;
+                            }
+
+                            // すべてのQRの読取りが完了したかチェック
+                            let allFound = false;
+                            if (mgmtInfo.regionCount === 3 && q2Data && q3Data) {
+                                allFound = true;
+                            } else if (mgmtInfo.regionCount === 4 && q2Data && q3Data && q4Data) {
+                                allFound = true;
+                            }
+
+                            if (allFound) {
+                                statusText.innerText = '全QRデータを分離完了。結果を表示します...';
                                 showNewColorResult(
                                     newColorQ1Data.text,
                                     q2Data,
-                                    q3Data, // null: 色分離未実装
-                                    q4Data, // null: 色分離未実装
+                                    q3Data,
+                                    q4Data,
                                     mgmtInfo
                                 );
                                 isProcessing = false;
                                 return;
                             } else {
-                                statusText.innerText = '第1QR検出済み / 第2QR以降を探索中...';
+                                // 見つかった数に応じてステータス更新
+                                let foundCount = 1; // Q1は検出済
+                                if (q2Data) foundCount++;
+                                if (q3Data) foundCount++;
+                                if (q4Data) foundCount++;
+                                statusText.innerText = 'カラー分離探索中... (検出: ' + foundCount + '/' + mgmtInfo.regionCount + ') ' + (sx===0 ? '(全画面)' : '(クロップ済)');
+                                
+                                // デバッグ描画: Q2の探索状態を可視化（クロップ領域を赤枠で囲む等も可能だが省略）
                             }
                         }
 
