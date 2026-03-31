@@ -1122,7 +1122,7 @@
         function resetNewColorScanState() {
             newColorScanStage = 0;
             newColorQ1Data = null;
-            newColorScanResult = { qr2: null, qr3: null, qr4: null, attempts: 0 };
+            newColorScanResult = { qr2: null, qr3: null, qr4: null, attempts: 0, _q2Seed: null, _q4Seed: null };
         }
 
         function resetColorScanResult() {
@@ -2658,75 +2658,125 @@
             const decoder = getNewColorDecoder(q1Data.mgmtInfo);
             if (!decoder) return null;
 
-            const displayStates = sampleNewColorDisplayStates(imageData.data, width, height, q1Data, decoder);
-            const result = { qr2: null, qr3: null, qr4: null };
-            if (displayStates) {
-                const originalStates = rotateStateMatrix180(displayStates);
+            const result = {
+                qr2: null,
+                qr3: null,
+                qr4: null,
+                _q2Seed: existingResult && existingResult._q2Seed ? existingResult._q2Seed : null,
+                _q4Seed: existingResult && existingResult._q4Seed ? existingResult._q4Seed : null
+            };
 
-                if (!existingResult || !existingResult.qr2) {
-                    const q2Bits = buildBitMatrixFromColorStates(originalStates, decoder.states, 0);
-                    const q2Qr = decodeSyntheticNewColorQr(q2Bits, 1);
-                    if (q2Qr) result.qr2 = q2Qr.data;
-                }
+            const q1Bounds = getQrLocationBBox(q1Data.location);
+            const shiftedBounds = computeShiftedNewColorBounds(q1Data);
+            const unionBounds = mergeBBox(q1Bounds, shiftedBounds);
+            const moduleSize = (shiftedBounds && shiftedBounds.moduleSize) || estimateModuleSizeFromQr(q1Data) || 4;
+            const pad = Math.max(14, Math.round(moduleSize * 4));
+            const pairBounds = unionBounds
+                ? normalizeBBox({
+                    x: unionBounds.x - pad,
+                    y: unionBounds.y - pad,
+                    width: unionBounds.width + pad * 2,
+                    height: unionBounds.height + pad * 2
+                }, width, height)
+                : { x: 0, y: 0, width, height };
+            if (!pairBounds) return result;
 
-                if (!existingResult || !existingResult.qr3) {
-                    const q3Bits = buildBitMatrixFromColorStates(originalStates, decoder.states, 1);
-                    const q3Qr = decodeSyntheticNewColorQr(q3Bits, 0);
-                    if (q3Qr) result.qr3 = q3Qr.data;
-                }
+            const pairCrop = cropMonochromeRgbaImage(
+                imageData.data,
+                width,
+                height,
+                pairBounds.x,
+                pairBounds.y,
+                pairBounds.width,
+                pairBounds.height
+            );
+            const projectedBuffers = buildNewColorProjectionBuffers(
+                pairCrop.data,
+                pairCrop.width * pairCrop.height,
+                decoder
+            );
+            if (projectedBuffers.length === 0) return result;
 
-                if (q1Data.mgmtInfo.regionCount === 4 && (!existingResult || !existingResult.qr4)) {
-                    const q4Bits = buildBitMatrixFromColorStates(originalStates, decoder.states, 2);
-                    const q4Qr = decodeSyntheticNewColorQr(q4Bits, 1);
-                    if (q4Qr) result.qr4 = q4Qr.data;
+            const runPairDecode = (binaryData, needZero, needOne) => decodeTargetedColorPair([
+                { data: binaryData, inversionAttempts: 'dontInvert', preBinarized: true, singleLocate: true },
+                { data: binaryData, inversionAttempts: 'attemptBoth', preBinarized: true, singleLocate: true }
+            ], pairCrop.width, pairCrop.height, needZero, needOne);
+
+            if ((!existingResult || !existingResult.qr2) && projectedBuffers[0]) {
+                const pairResult = runPairDecode(projectedBuffers[0], true, true);
+                if (pairResult && pairResult.results) {
+                    for (const qr of pairResult.results) {
+                        const adjusted = offsetQrResult(qr, pairCrop.offsetX, pairCrop.offsetY);
+                        if (getColorPairTopBit(adjusted) === 1 && !result.qr2) {
+                            result.qr2 = adjusted.data;
+                            result._q2Seed = adjusted;
+                        }
+                    }
                 }
             }
 
-            const needProjectedQ2 = (!existingResult || !existingResult.qr2) && !result.qr2;
-            const needProjectedQ3 = (!existingResult || !existingResult.qr3) && !result.qr3;
-            const needProjectedQ4 = q1Data.mgmtInfo.regionCount === 4
-                && (!existingResult || !existingResult.qr4)
-                && !result.qr4;
-
-            if (needProjectedQ2 || needProjectedQ3 || needProjectedQ4) {
-                const cropSpecs = buildNewColorTwinCropSpecs(width, height, q1Data);
-                for (const cropSpec of cropSpecs) {
-                    const rawCrop = cropMonochromeRgbaImage(
-                        imageData.data,
-                        width,
-                        height,
-                        cropSpec.x,
-                        cropSpec.y,
-                        cropSpec.width,
-                        cropSpec.height
-                    );
-                    const projectedBuffers = buildNewColorProjectionBuffers(
-                        rawCrop.data,
-                        rawCrop.width * rawCrop.height,
-                        decoder
-                    );
-
-                    if (!result.qr2 && (!existingResult || !existingResult.qr2) && projectedBuffers[0]) {
-                        const qr2 = decodeProjectedNewColorCrop(projectedBuffers[0], rawCrop, 1, cropSpec.expectedRect);
-                        if (qr2) result.qr2 = qr2.data;
+            if (q1Data.mgmtInfo.regionCount === 4 && (!existingResult || !existingResult.qr4) && projectedBuffers[2]) {
+                const pairResult = runPairDecode(projectedBuffers[2], true, true);
+                if (pairResult && pairResult.results) {
+                    for (const qr of pairResult.results) {
+                        const adjusted = offsetQrResult(qr, pairCrop.offsetX, pairCrop.offsetY);
+                        if (getColorPairTopBit(adjusted) === 1 && !result.qr4) {
+                            result.qr4 = adjusted.data;
+                            result._q4Seed = adjusted;
+                        }
                     }
+                }
+            }
 
-                    if (!result.qr3 && (!existingResult || !existingResult.qr3) && projectedBuffers[1]) {
-                        const qr3 = decodeProjectedNewColorCrop(projectedBuffers[1], rawCrop, 0, cropSpec.expectedRect);
-                        if (qr3) result.qr3 = qr3.data;
+            let expectedColorRect = null;
+            const seedQr = result._q2Seed || result._q4Seed;
+            if (seedQr && seedQr.location) {
+                const seedBounds = getQrLocationBBox(seedQr.location);
+                if (seedBounds) {
+                    expectedColorRect = normalizeBBox({
+                        x: seedBounds.x - pairCrop.offsetX,
+                        y: seedBounds.y - pairCrop.offsetY,
+                        width: seedBounds.width,
+                        height: seedBounds.height
+                    }, pairCrop.width, pairCrop.height);
+                }
+            }
+            if (!expectedColorRect && shiftedBounds) {
+                expectedColorRect = normalizeBBox({
+                    x: shiftedBounds.x - pairCrop.offsetX,
+                    y: shiftedBounds.y - pairCrop.offsetY,
+                    width: shiftedBounds.width,
+                    height: shiftedBounds.height
+                }, pairCrop.width, pairCrop.height);
+            }
+
+            if (!result.qr2 && (!existingResult || !existingResult.qr2) && projectedBuffers[0]) {
+                const qr2 = decodeProjectedNewColorCrop(projectedBuffers[0], pairCrop, 1, expectedColorRect);
+                if (qr2) {
+                    result.qr2 = qr2.data;
+                    result._q2Seed = qr2;
+                    const seedBounds = getQrLocationBBox(qr2.location);
+                    if (seedBounds) {
+                        expectedColorRect = normalizeBBox({
+                            x: seedBounds.x - pairCrop.offsetX,
+                            y: seedBounds.y - pairCrop.offsetY,
+                            width: seedBounds.width,
+                            height: seedBounds.height
+                        }, pairCrop.width, pairCrop.height);
                     }
+                }
+            }
 
-                    if (q1Data.mgmtInfo.regionCount === 4
-                        && !result.qr4
-                        && (!existingResult || !existingResult.qr4)
-                        && projectedBuffers[2]) {
-                        const qr4 = decodeProjectedNewColorCrop(projectedBuffers[2], rawCrop, 1, cropSpec.expectedRect);
-                        if (qr4) result.qr4 = qr4.data;
-                    }
+            if (!result.qr3 && (!existingResult || !existingResult.qr3) && projectedBuffers[1]) {
+                const qr3 = decodeProjectedNewColorCrop(projectedBuffers[1], pairCrop, 0, expectedColorRect);
+                if (qr3) result.qr3 = qr3.data;
+            }
 
-                    const projectedComplete = result.qr2 && result.qr3
-                        && (q1Data.mgmtInfo.regionCount !== 4 || result.qr4);
-                    if (projectedComplete) break;
+            if (q1Data.mgmtInfo.regionCount === 4 && !result.qr4 && (!existingResult || !existingResult.qr4) && projectedBuffers[2]) {
+                const qr4 = decodeProjectedNewColorCrop(projectedBuffers[2], pairCrop, 1, expectedColorRect);
+                if (qr4) {
+                    result.qr4 = qr4.data;
+                    result._q4Seed = qr4;
                 }
             }
 
@@ -2961,7 +3011,7 @@
                                         location: q1Found.location,
                                         version: q1Found.version
                                     };
-                                    newColorScanResult = { qr2: null, qr3: null, qr4: null, attempts: 0 };
+                                    newColorScanResult = { qr2: null, qr3: null, qr4: null, attempts: 0, _q2Seed: null, _q4Seed: null };
                                     newColorScanStage = 1;
                                     const rStr = mgmtInfo.regionCount === 4 ? '4領域化(8色)' : '3領域化(4色)';
                                     statusText.innerText = '第1QR検出: ' + rStr + ' / 第2QR以降を探索中...';
@@ -2981,7 +3031,7 @@
                         } else if (newColorScanStage === 1 && newColorQ1Data) {
                             const mgmtInfo = newColorQ1Data.mgmtInfo;
                             if (!newColorScanResult) {
-                                newColorScanResult = { qr2: null, qr3: null, qr4: null, attempts: 0 };
+                                newColorScanResult = { qr2: null, qr3: null, qr4: null, attempts: 0, _q2Seed: null, _q4Seed: null };
                             }
 
                             zxingCanvas.width = vw;
@@ -2994,6 +3044,8 @@
                                 if (!newColorScanResult.qr2 && decoded.qr2) newColorScanResult.qr2 = decoded.qr2;
                                 if (!newColorScanResult.qr3 && decoded.qr3) newColorScanResult.qr3 = decoded.qr3;
                                 if (!newColorScanResult.qr4 && decoded.qr4) newColorScanResult.qr4 = decoded.qr4;
+                                if (!newColorScanResult._q2Seed && decoded._q2Seed) newColorScanResult._q2Seed = decoded._q2Seed;
+                                if (!newColorScanResult._q4Seed && decoded._q4Seed) newColorScanResult._q4Seed = decoded._q4Seed;
                             }
                             newColorScanResult.attempts++;
 
