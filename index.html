@@ -2427,10 +2427,11 @@
                                         text: q1Found.data,
                                         managementCode: q1Found.managementCode,
                                         mgmtInfo: mgmtInfo,
+                                        version: q1Found.version,      // ★ クロップ量の計算に必須
                                         creationDateTimeExt32: q1Found.creationDateTimeExt32,
                                         codewords: q1Found.codewords,
                                         dataBytes: q1Found.dataBytes,
-                                        location: q1Found.location // locator erasing に必須
+                                        location: q1Found.location     // locator erasing/cropping に必須
                                     };
                                     newColorQ2Data = null;
                                     newColorQ3Data = null;
@@ -2498,57 +2499,69 @@
                             // ピクセル単位の色分離を実行
                             const { q2img, q3img, q4img } = splitNewColorQRs(cropData.data, sw, sh, mgmtInfo.regionCount, mgmtInfo.colorSpecBits);
 
-                            // ★ Q1のFinder Patternを白塗りで破壊し、jsQRが誤ってQ1を検出しないようにする
-                            function eraseQ1Finders(imgDataArray) {
-                                if (!newColorQ1Data.location) return;
-                                const tl = { x: newColorQ1Data.location.topLeftCorner.x - sx, y: newColorQ1Data.location.topLeftCorner.y - sy };
-                                const tr = { x: newColorQ1Data.location.topRightCorner.x - sx, y: newColorQ1Data.location.topRightCorner.y - sy };
-                                const bl = { x: newColorQ1Data.location.bottomLeftCorner.x - sx, y: newColorQ1Data.location.bottomLeftCorner.y - sy };
-                                
-                                const w = Math.hypot(tr.x - tl.x, tr.y - tl.y);
-                                const h = Math.hypot(bl.x - tl.x, bl.y - tl.y);
-                                const rSq = (Math.max(w, h) * 0.35) ** 2; // Q1の対角数モジュール分だけ消去（Q2には届かない）
-                                
-                                for (let y = 0; y < sh; y++) {
-                                    for (let x = 0; x < sw; x++) {
-                                        const dTl = (x - tl.x)**2 + (y - tl.y)**2;
-                                        const dTr = (x - tr.x)**2 + (y - tr.y)**2;
-                                        const dBl = (x - bl.x)**2 + (y - bl.y)**2;
-                                        if (dTl < rSq || dTr < rSq || dBl < rSq) {
-                                            const idx = (y * sw + x) * 4;
-                                            imgDataArray[idx] = 255;
-                                            imgDataArray[idx+1] = 255;
-                                            imgDataArray[idx+2] = 255;
-                                        }
-                                    }
+                            // ★ 参考コードの手法を採用：正確なモジュールサイズを計算して、第1QRのファインダーのみを確実に切り落とす
+                            function estimateModuleSize(qrLoc, version) {
+                                if (!qrLoc || typeof version !== 'number') return null;
+                                const modules = 17 + 4 * version;
+                                const tl = qrLoc.topLeftCorner, tr = qrLoc.topRightCorner, bl = qrLoc.bottomLeftCorner;
+                                if (!tl || !tr || !bl) return null;
+                                const top = Math.hypot(tr.x - tl.x, tr.y - tl.y);
+                                const left = Math.hypot(bl.x - tl.x, bl.y - tl.y);
+                                return ((top + left) / 2) / modules;
+                            }
+
+                            function getCroppedSubArray(srcData, width, height, shiftX, shiftY) {
+                                if (shiftX <= 0 && shiftY <= 0) return { data: srcData, w: width, h: height };
+                                const outW = width - shiftX;
+                                const outH = height - shiftY;
+                                if (outW <= 10 || outH <= 10) return { data: srcData, w: width, h: height };
+                                const out = new Uint8ClampedArray(outW * outH * 4);
+                                out.fill(255); // 白で埋める
+
+                                const rowBytes = outW * 4;
+                                for (let y = 0; y < outH; y++) {
+                                    const srcOffset = ((y + shiftY) * width + shiftX) * 4;
+                                    const outOffset = y * rowBytes;
+                                    // 1行ずつ部分配列としてコピー（高速）
+                                    out.set(srcData.subarray(srcOffset, srcOffset + rowBytes), outOffset);
+                                }
+                                return { data: out, w: outW, h: outH };
+                            }
+
+                            let shiftPx = 0;
+                            if (newColorQ1Data.location && newColorQ1Data.version) {
+                                const modPx = estimateModuleSize(newColorQ1Data.location, newColorQ1Data.version);
+                                if (modPx) {
+                                    // Q2は8.5モジュールずれるため、8.0モジュール分カットすればQ1のファインダー(7)だけ消えQ2の(8.5)は残る
+                                    shiftPx = Math.max(1, Math.round(modPx * 8.0));
                                 }
                             }
+                            // フォールバック（念のための安全策）
+                            if (shiftPx === 0) shiftPx = Math.max(1, Math.floor(sw * 0.15));
 
-                            if (newColorQ1Data.location) {
-                                eraseQ1Finders(q2img);
-                                eraseQ1Finders(q3img);
-                                if (q4img) eraseQ1Finders(q4img);
-                            }
+                            const crop2 = getCroppedSubArray(q2img, sw, sh, shiftPx, shiftPx);
+                            const crop3 = getCroppedSubArray(q3img, sw, sh, shiftPx, shiftPx);
+                            const crop4 = q4img ? getCroppedSubArray(q4img, sw, sh, shiftPx, shiftPx) : null;
 
-                            // jsQR オプション: multiをfalseにして高速に。Q1は破壊済なのでQ2+が一瞬で見つかる
-                            const opts = { inversionAttempts: "attemptBoth", multi: false };
+                            // jsQR オプション: multiをfalseにして最速パスを実行。Q1は完全に枠外になったのでQ2+が一瞬で見つかる
+                            const opts = { inversionAttempts: "dontInvert", multi: false }; // 生成済み白黒画像なのでdontInvertで十分
                             if (appMask) {
                                 opts.appEncMask = Array.from(appMask); // パスワードマスク
                             }
 
                             // 各QR画像をデコード（すでに取得済みの場合はスキップして永続化）
                             if (!newColorQ2Data) {
-                                const res2 = jsQR(q2img, sw, sh, opts);
+                                const res2 = jsQR(crop2.data, crop2.w, crop2.h, opts);
                                 if (res2 && res2.data && !res2.isRaw && (((res2.managementCode || 0) >>> 15) & 1) === 1) newColorQ2Data = res2.data;
                             }
 
                             if (!newColorQ3Data) {
-                                const res3 = jsQR(q3img, sw, sh, opts);
+                                const res3 = jsQR(crop3.data, crop3.w, crop3.h, opts);
                                 if (res3 && res3.data && !res3.isRaw && (((res3.managementCode || 0) >>> 15) & 1) === 1) newColorQ3Data = res3.data;
                             }
 
-                            if (mgmtInfo.regionCount === 4 && q4img && !newColorQ4Data) {
-                                const res4 = jsQR(q4img, sw, sh, opts);
+                            if (mgmtInfo.regionCount === 4 && crop4 && !newColorQ4Data) {
+                                const res4 = jsQR(crop4.data, crop4.w, crop4.h, opts);
                                 if (res4 && res4.data && !res4.isRaw && (((res4.managementCode || 0) >>> 15) & 1) === 1) newColorQ4Data = res4.data;
                             }
 
