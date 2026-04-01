@@ -2732,16 +2732,16 @@
                     );
                     if (qr2Synth) result.qr2 = qr2Synth.data;
                 }
-                const hasQ3Seed = !!(result._q2Seed || (existingResult && existingResult._q2Seed));
-                if (hasQ3Seed && (!existingResult || !existingResult.qr3) && decoder.states && projectedBuffers[1]) {
+                // ★ 修正: hasQ3Seed/hasQ4Seedゲートを削除。合成デコードはシード不要で独立に動作可能。
+                // 3領域モードでは_q2Seedが設定されず、qr3合成デコードが永久にブロックされるバグを修正。
+                if ((!existingResult || !existingResult.qr3) && decoder.states && projectedBuffers[1]) {
                     const qr3Synth = decodeSyntheticNewColorQr(
                         buildBitMatrixFromColorStates(sampledStates, decoder.states, 1),
                         0
                     );
                     if (qr3Synth) result.qr3 = qr3Synth.data;
                 }
-                const hasQ4Seed = !!(result._q4Seed || (existingResult && existingResult._q4Seed));
-                if (hasQ4Seed && q1Data.mgmtInfo.regionCount === 4 && (!existingResult || !existingResult.qr4) && decoder.states && projectedBuffers[2]) {
+                if (q1Data.mgmtInfo.regionCount === 4 && (!existingResult || !existingResult.qr4) && decoder.states && projectedBuffers[2]) {
                     const qr4Synth = decodeSyntheticNewColorQr(
                         buildBitMatrixFromColorStates(sampledStates, decoder.states, 2),
                         1
@@ -3437,6 +3437,9 @@
                         if (scanStage === 3) {
                             if (appMask) {
                                 opts.appEncMask = Array.from(appMask);
+                                // ★ 修正: multi:trueを追加。appEncMask適用時、QR1(平文)はXORでRS訂正失敗→null、
+                                // QR2(暗号化)はXORで復号成功。multi無しではQR1が先に見つかるとnull返却でQR2未検出。
+                                opts.multi = true;
                             } else if (needSysEncForStage3 || needSysEncForDigitalSign) {
                                 // 通常モード/電子署名モード: 第2QRはシステム暗号化されている
                                 opts.sysEncDecode = true;
@@ -3770,6 +3773,30 @@
                             if (!diffTxt && !diffMgmt) continue;
 
                             secondQR = { text: resultData, managementCode: resultMgmt, points: resultPts };
+                            isScanning = false;
+                            isProcessing = false;
+                            showResultScreen();
+                            return;
+                        }
+                    }
+
+                    // ★ 修正: Stage1→3遷移後、同フレーム内でQR2を再探索
+                    // detectedItems配列でQR2がQR1より前にあった場合、Stage1では
+                    // topBit≠0でスキップされ、Stage3遷移後にはループが既に通過済み。
+                    // ここで再スキャンすることで、同一フレーム内でQR2を検出可能にする。
+                    if (scanStage === 3 && firstQR && !secondQR && isScanning && !digitalSignStage3) {
+                        for (let item of detectedItems) {
+                            const resMgmt = item.managementCode;
+                            const resMgmtFlags16 = item.managementFlags16 !== undefined ? item.managementFlags16 : ((item.managementCode32 || 0) & 0xFFFF);
+                            const resMgmtInfo = parseStandardMgmt(resMgmt, resMgmtFlags16);
+                            const resTopBit = resMgmtInfo ? resMgmtInfo.qrNo : (((resMgmt || 0) >> 15) & 1);
+                            if (resTopBit !== 1) continue;
+
+                            const diffTxt2 = item.data !== firstQR.text;
+                            const diffMgmt2 = firstQR.managementCode !== undefined && resMgmt !== undefined && firstQR.managementCode !== resMgmt;
+                            if (!diffTxt2 && !diffMgmt2) continue;
+
+                            secondQR = { text: item.data, managementCode: resMgmt, points: item.points };
                             isScanning = false;
                             isProcessing = false;
                             showResultScreen();
