@@ -1,4 +1,4 @@
-﻿
+
 
 
 
@@ -2732,16 +2732,16 @@
                     );
                     if (qr2Synth) result.qr2 = qr2Synth.data;
                 }
-                // ★ 修正: hasQ3Seed/hasQ4Seedゲートを削除。合成デコードはシード不要で独立に動作可能。
-                // 3領域モードでは_q2Seedが設定されず、qr3合成デコードが永久にブロックされるバグを修正。
-                if ((!existingResult || !existingResult.qr3) && decoder.states && projectedBuffers[1]) {
+                const hasQ3Seed = !!(result._q2Seed || (existingResult && existingResult._q2Seed));
+                if (hasQ3Seed && (!existingResult || !existingResult.qr3) && decoder.states && projectedBuffers[1]) {
                     const qr3Synth = decodeSyntheticNewColorQr(
                         buildBitMatrixFromColorStates(sampledStates, decoder.states, 1),
                         0
                     );
                     if (qr3Synth) result.qr3 = qr3Synth.data;
                 }
-                if (q1Data.mgmtInfo.regionCount === 4 && (!existingResult || !existingResult.qr4) && decoder.states && projectedBuffers[2]) {
+                const hasQ4Seed = !!(result._q4Seed || (existingResult && existingResult._q4Seed));
+                if (hasQ4Seed && q1Data.mgmtInfo.regionCount === 4 && (!existingResult || !existingResult.qr4) && decoder.states && projectedBuffers[2]) {
                     const qr4Synth = decodeSyntheticNewColorQr(
                         buildBitMatrixFromColorStates(sampledStates, decoder.states, 2),
                         1
@@ -2803,8 +2803,10 @@
                 }, pairCrop.width, pairCrop.height);
             }
 
+            const q1ExcludeRects = q1Bounds ? [q1Bounds] : null;
+
             if (!result.qr2 && (!existingResult || !existingResult.qr2) && projectedBuffers[0]) {
-                const qr2 = decodeProjectedNewColorCrop(projectedBuffers[0], pairCrop, 1, expectedColorRect);
+                const qr2 = decodeProjectedNewColorCrop(projectedBuffers[0], pairCrop, 1, expectedColorRect, q1ExcludeRects);
                 if (qr2) {
                     result.qr2 = qr2.data;
                     result._q2Seed = qr2;
@@ -2821,12 +2823,12 @@
             }
 
             if (!result.qr3 && (!existingResult || !existingResult.qr3) && projectedBuffers[1]) {
-                const qr3 = decodeProjectedNewColorCrop(projectedBuffers[1], pairCrop, 0, expectedColorRect);
+                const qr3 = decodeProjectedNewColorCrop(projectedBuffers[1], pairCrop, 0, expectedColorRect, q1ExcludeRects);
                 if (qr3) result.qr3 = qr3.data;
             }
 
             if (q1Data.mgmtInfo.regionCount === 4 && !result.qr4 && (!existingResult || !existingResult.qr4) && projectedBuffers[2]) {
-                const qr4 = decodeProjectedNewColorCrop(projectedBuffers[2], pairCrop, 1, expectedColorRect);
+                const qr4 = decodeProjectedNewColorCrop(projectedBuffers[2], pairCrop, 1, expectedColorRect, q1ExcludeRects);
                 if (qr4) {
                     result.qr4 = qr4.data;
                     result._q4Seed = qr4;
@@ -2839,9 +2841,9 @@
             if (needFullFrameFallback) {
                 const fullCrop = { data: imageData.data, width, height, offsetX: 0, offsetY: 0 };
                 const fullProjected = buildNewColorProjectionBuffers(imageData.data, width * height, decoder);
-                const fullExcludeRects = q1Bounds ? [q1Bounds] : null;
+                
                 if (!result.qr2 && (!existingResult || !existingResult.qr2) && fullProjected[0]) {
-                    const qr2 = decodeProjectedNewColorCrop(fullProjected[0], fullCrop, 1, null, fullExcludeRects);
+                    const qr2 = decodeProjectedNewColorCrop(fullProjected[0], fullCrop, 1, null, q1ExcludeRects);
                     if (qr2) {
                         result.qr2 = qr2.data;
                         result._q2Seed = qr2;
@@ -2855,20 +2857,16 @@
                 }
 
                 if (!result.qr3 && (!existingResult || !existingResult.qr3) && fullProjected[1]) {
-                    const qr3 = decodeProjectedNewColorCrop(fullProjected[1], fullCrop, 0, fullExpectedRect, fullExcludeRects);
+                    const qr3 = decodeProjectedNewColorCrop(fullProjected[1], fullCrop, 0, fullExpectedRect, q1ExcludeRects);
                     if (qr3) result.qr3 = qr3.data;
                 }
                 if (q1Data.mgmtInfo.regionCount === 4 && !result.qr4 && (!existingResult || !existingResult.qr4) && fullProjected[2]) {
-                    const qr4 = decodeProjectedNewColorCrop(fullProjected[2], fullCrop, 1, fullExpectedRect, fullExcludeRects);
+                    const qr4 = decodeProjectedNewColorCrop(fullProjected[2], fullCrop, 1, fullExpectedRect, q1ExcludeRects);
                     if (qr4) {
                         result.qr4 = qr4.data;
                         result._q4Seed = qr4;
                     }
                 }
-            }
-
-            if (q1Data.mgmtInfo && q1Data.mgmtInfo.dataCompBits === 0 && result.qr3 && q1Data.text && result.qr3 === q1Data.text) {
-                result.qr3 = null;
             }
 
             return result;
@@ -3320,11 +3318,12 @@
                                 for (let i = 0; i < barcodes.length; i++) {
                                     const b = barcodes[i];
                                     const bbox = b.boundingBox;
-                                    const PADDING = Math.max(80, Math.floor(bbox.width * 0.6));
-                                    const sx = Math.max(0, Math.floor(bbox.x) - PADDING);
-                                    const sy = Math.max(0, Math.floor(bbox.y) - PADDING);
-                                    const sw = Math.min(video.videoWidth - sx, Math.ceil(bbox.width) + PADDING * 2);
-                                    const sh = Math.min(video.videoHeight - sy, Math.ceil(bbox.height) + PADDING * 2);
+                                    const padX = Math.round(bbox.width * 1.5);
+                                    const padY = Math.round(bbox.height * 1.5);
+                                    const sx = Math.max(0, Math.floor(bbox.x) - padX);
+                                    const sy = Math.max(0, Math.floor(bbox.y) - padY);
+                                    const sw = Math.min(video.videoWidth - sx, Math.ceil(bbox.width) + padX * 2);
+                                    const sh = Math.min(video.videoHeight - sy, Math.ceil(bbox.height) + padY * 2);
 
                                     zxingCanvas.width = sw;
                                     zxingCanvas.height = sh;
@@ -3437,9 +3436,6 @@
                         if (scanStage === 3) {
                             if (appMask) {
                                 opts.appEncMask = Array.from(appMask);
-                                // ★ 修正: multi:trueを追加。appEncMask適用時、QR1(平文)はXORでRS訂正失敗→null、
-                                // QR2(暗号化)はXORで復号成功。multi無しではQR1が先に見つかるとnull返却でQR2未検出。
-                                opts.multi = true;
                             } else if (needSysEncForStage3 || needSysEncForDigitalSign) {
                                 // 通常モード/電子署名モード: 第2QRはシステム暗号化されている
                                 opts.sysEncDecode = true;
@@ -3773,30 +3769,6 @@
                             if (!diffTxt && !diffMgmt) continue;
 
                             secondQR = { text: resultData, managementCode: resultMgmt, points: resultPts };
-                            isScanning = false;
-                            isProcessing = false;
-                            showResultScreen();
-                            return;
-                        }
-                    }
-
-                    // ★ 修正: Stage1→3遷移後、同フレーム内でQR2を再探索
-                    // detectedItems配列でQR2がQR1より前にあった場合、Stage1では
-                    // topBit≠0でスキップされ、Stage3遷移後にはループが既に通過済み。
-                    // ここで再スキャンすることで、同一フレーム内でQR2を検出可能にする。
-                    if (scanStage === 3 && firstQR && !secondQR && isScanning && !digitalSignStage3) {
-                        for (let item of detectedItems) {
-                            const resMgmt = item.managementCode;
-                            const resMgmtFlags16 = item.managementFlags16 !== undefined ? item.managementFlags16 : ((item.managementCode32 || 0) & 0xFFFF);
-                            const resMgmtInfo = parseStandardMgmt(resMgmt, resMgmtFlags16);
-                            const resTopBit = resMgmtInfo ? resMgmtInfo.qrNo : (((resMgmt || 0) >> 15) & 1);
-                            if (resTopBit !== 1) continue;
-
-                            const diffTxt2 = item.data !== firstQR.text;
-                            const diffMgmt2 = firstQR.managementCode !== undefined && resMgmt !== undefined && firstQR.managementCode !== resMgmt;
-                            if (!diffTxt2 && !diffMgmt2) continue;
-
-                            secondQR = { text: item.data, managementCode: resMgmt, points: item.points };
                             isScanning = false;
                             isProcessing = false;
                             showResultScreen();
