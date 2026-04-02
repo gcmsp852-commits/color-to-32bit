@@ -1669,8 +1669,55 @@
             return Array.from(found.values());
         }
 
+        function getManagementCode32FromParts(managementCode, managementFlags16 = null) {
+            if (managementCode === undefined || managementCode === null) return null;
+            if ((managementCode >>> 0) > 0xFFFF && (managementFlags16 === undefined || managementFlags16 === null)) {
+                return managementCode >>> 0;
+            }
+            if (managementFlags16 === undefined || managementFlags16 === null) return null;
+            return ((((managementCode & 0xFFFF) << 16) | (managementFlags16 & 0xFFFF)) >>> 0);
+        }
+
+        function getManagementCode32FromQr(qr) {
+            if (!qr) return null;
+            if (qr.managementCode32 !== undefined && qr.managementCode32 !== null) {
+                return qr.managementCode32 >>> 0;
+            }
+            return getManagementCode32FromParts(qr.managementCode, qr.managementFlags16);
+        }
+
+        function getQrNumber(qr) {
+            const managementCode32 = getManagementCode32FromQr(qr);
+            if (managementCode32 !== null) {
+                const mgmtInfo = parseStandardMgmt(managementCode32);
+                return mgmtInfo ? mgmtInfo.qrNo : null;
+            }
+            if (qr && qr.managementCode !== undefined && qr.managementCode !== null) {
+                return ((qr.managementCode >>> 14) & 0x3);
+            }
+            return null;
+        }
+
         function getColorPairTopBit(qr) {
-            return qr && qr.managementCode !== undefined ? ((qr.managementCode >>> 15) & 1) : null;
+            const qrNo = getQrNumber(qr);
+            if (qrNo !== null) return qrNo & 1;
+            return qr && qr.managementCode !== undefined ? ((((qr.managementCode >>> 14) & 0x3)) & 1) : null;
+        }
+
+        function matchesExpectedQrNumber(qr, expectedQrNo) {
+            if (expectedQrNo === undefined || expectedQrNo === null) return true;
+            const qrNo = getQrNumber(qr);
+            if (qrNo !== null) return qrNo === expectedQrNo;
+            const roleBit = getColorPairTopBit(qr);
+            return roleBit !== null ? roleBit === (expectedQrNo & 1) : false;
+        }
+
+        function matchesColorPairSlot(qr, expectedQrNos) {
+            if (!expectedQrNos || expectedQrNos.length === 0) return true;
+            const qrNo = getQrNumber(qr);
+            if (qrNo !== null) return expectedQrNos.includes(qrNo);
+            const roleBit = getColorPairTopBit(qr);
+            return roleBit !== null ? expectedQrNos.some(no => (no & 1) === roleBit) : false;
         }
 
         function cropMonochromeRgbaImage(src, width, height, sx, sy, cropWidth, cropHeight) {
@@ -1760,7 +1807,7 @@
             return selectAccepted(multiRes);
         }
 
-        function decodeTargetedColorPair(scanPasses, width, height, needZero, needOne) {
+        function decodeTargetedColorPair(scanPasses, width, height, needZero, needOne, zeroQrNos = [0, 2], oneQrNos = [1, 3]) {
             const found = new Map();
             let detectedBBox = null;
             let seed = null;
@@ -1780,6 +1827,7 @@
                     const items = Array.isArray(multiRes) ? multiRes : [multiRes];
                     for (const qr of items) {
                         if (qr && qr.data && !qr.isRaw) {
+                            if (!matchesColorPairSlot(qr, zeroQrNos) && !matchesColorPairSlot(qr, oneQrNos)) continue;
                             const key = getColorResultKey(qr);
                             if (!found.has(key)) {
                                 found.set(key, qr);
@@ -1790,8 +1838,8 @@
                     }
                 }
                 // multiで両方見つかったらここで終了
-                const hasZero = Array.from(found.values()).some(q => getColorPairTopBit(q) === 0);
-                const hasOne = Array.from(found.values()).some(q => getColorPairTopBit(q) === 1);
+                const hasZero = Array.from(found.values()).some(q => matchesColorPairSlot(q, zeroQrNos));
+                const hasOne = Array.from(found.values()).some(q => matchesColorPairSlot(q, oneQrNos));
                 if ((!needZero || hasZero) && (!needOne || hasOne)) {
                     return { results: Array.from(found.values()), bbox: detectedBBox };
                 }
@@ -1801,7 +1849,9 @@
             // multiで1つも見つからなかった場合、singleモードで試行
             if (!seed) {
                 for (const scanPass of scanPasses) {
-                    const qr = decodeSingleColorQr(scanPass, width, height);
+                    const qr = decodeSingleColorQr(scanPass, width, height, (item) => {
+                        return matchesColorPairSlot(item, zeroQrNos) || matchesColorPairSlot(item, oneQrNos);
+                    });
                     if (!qr) continue;
                     const key = getColorResultKey(qr);
                     if (!found.has(key)) {
@@ -1817,9 +1867,8 @@
                 return { results: Array.from(found.values()), bbox: detectedBBox };
             }
 
-            const seedTopBit = getColorPairTopBit(seed);
-            let stillNeedZero = needZero && !Array.from(found.values()).some(q => getColorPairTopBit(q) === 0);
-            let stillNeedOne = needOne && !Array.from(found.values()).some(q => getColorPairTopBit(q) === 1);
+            let stillNeedZero = needZero && !Array.from(found.values()).some(q => matchesColorPairSlot(q, zeroQrNos));
+            let stillNeedOne = needOne && !Array.from(found.values()).some(q => matchesColorPairSlot(q, oneQrNos));
 
             if (!stillNeedZero && !stillNeedOne) {
                 return { results: Array.from(found.values()), bbox: detectedBBox };
@@ -1850,7 +1899,7 @@
                         inversionAttempts: scanPass.inversionAttempts,
                         preBinarized: scanPass.preBinarized,
                         singleLocate: scanPass.singleLocate
-                    }, crop.width, crop.height, (item) => getColorPairTopBit(item) !== 1);
+                    }, crop.width, crop.height, (item) => matchesColorPairSlot(item, zeroQrNos));
                     if (qr) {
                         const adjusted = offsetQrResult(qr, crop.offsetX, crop.offsetY);
                         const key = getColorResultKey(adjusted);
@@ -1870,7 +1919,7 @@
                         inversionAttempts: scanPass.inversionAttempts,
                         preBinarized: scanPass.preBinarized,
                         singleLocate: scanPass.singleLocate
-                    }, crop.width, crop.height, (item) => getColorPairTopBit(item) !== 0);
+                    }, crop.width, crop.height, (item) => matchesColorPairSlot(item, oneQrNos));
                     if (qr) {
                         const adjusted = offsetQrResult(qr, crop.offsetX, crop.offsetY);
                         const key = getColorResultKey(adjusted);
@@ -1886,11 +1935,14 @@
             return { results: Array.from(found.values()), bbox: detectedBBox };
         }
 
-        function assignColorPairResult(target, zeroKey, oneKey, qr) {
+        function assignColorPairResult(target, zeroKey, oneKey, qr, zeroQrNo = null, oneQrNo = null) {
             if (!qr || !qr.data) return;
-            const topBit = getColorPairTopBit(qr);
-            // 第1QR(topBit===0)の場合、読取期限・読取者IDをチェック
-            if (topBit === 0 && zeroKey === 'qr1' && !target._expiryChecked) {
+            const qrNo = getQrNumber(qr);
+            const zeroMatch = zeroQrNo !== null ? qrNo === zeroQrNo : getColorPairTopBit(qr) === 0;
+            const oneMatch = oneQrNo !== null ? qrNo === oneQrNo : getColorPairTopBit(qr) === 1;
+            if (qrNo !== null && zeroQrNo !== null && oneQrNo !== null && !zeroMatch && !oneMatch) return;
+            // 第1QRの場合、読取期限・読取者IDをチェック
+            if (zeroMatch && zeroKey === 'qr1' && !target._expiryChecked) {
                 if (qr.expiryExt32 !== undefined && !checkExpiry(qr.expiryExt32)) {
                     target._expiryFailed = true;
                     return;
@@ -1923,11 +1975,11 @@
                 }
                 target._expiryChecked = true;
             }
-            if (topBit === 0) {
+            if (zeroMatch) {
                 if (!target[zeroKey]) target[zeroKey] = qr.data;
                 return;
             }
-            if (topBit === 1) {
+            if (oneMatch) {
                 if (!target[oneKey]) target[oneKey] = qr.data;
                 return;
             }
@@ -2067,9 +2119,9 @@
                 const needQr2 = !(existingResult && existingResult.qr2);
                 const twin1Targeted = decodeTargetedColorPair([
                     { data: twin1StrictData, inversionAttempts: 'dontInvert', preBinarized: true, singleLocate: true }
-                ], width, height, needQr1, needQr2);
+                ], width, height, needQr1, needQr2, [0], [1]);
                 for (const qr of twin1Targeted.results) {
-                    assignColorPairResult(result, 'qr1', 'qr2', qr);
+                    assignColorPairResult(result, 'qr1', 'qr2', qr, 0, 1);
                     detectedBBox = mergeLocationBBox(detectedBBox, qr);
                 }
             }
@@ -2081,9 +2133,9 @@
 
                 const twin2Targeted = decodeTargetedColorPair([
                     { data: twin2StrictData, inversionAttempts: 'dontInvert', preBinarized: true, singleLocate: true }
-                ], width, height, needQr3, needQr4);
+                ], width, height, needQr3, needQr4, [2], [3]);
                 for (const qr of twin2Targeted.results) {
-                    assignColorPairResult(result, 'qr3', 'qr4', qr);
+                    assignColorPairResult(result, 'qr3', 'qr4', qr, 2, 3);
                     detectedBBox = mergeLocationBBox(detectedBBox, qr);
                 }
 
@@ -2093,9 +2145,9 @@
                 if (needBiasedQr3 || needBiasedQr4) {
                     const twin2BiasedTargeted = decodeTargetedColorPair([
                         { data: twin2BiasedData, inversionAttempts: 'dontInvert', preBinarized: true, singleLocate: true }
-                    ], width, height, needBiasedQr3, needBiasedQr4);
+                    ], width, height, needBiasedQr3, needBiasedQr4, [2], [3]);
                     for (const qr of twin2BiasedTargeted.results) {
-                        assignColorPairResult(result, 'qr3', 'qr4', qr);
+                        assignColorPairResult(result, 'qr3', 'qr4', qr, 2, 3);
                         detectedBBox = mergeLocationBBox(detectedBBox, qr);
                     }
                 }
@@ -2107,9 +2159,9 @@
                     const twin2Retry = decodeTargetedColorPair([
                         { data: twin2StrictData, inversionAttempts: 'attemptBoth', preBinarized: true, singleLocate: true },
                         { data: twin2BiasedData, inversionAttempts: 'attemptBoth', preBinarized: true, singleLocate: true }
-                    ], width, height, retryQr3, retryQr4);
+                    ], width, height, retryQr3, retryQr4, [2], [3]);
                     for (const qr of twin2Retry.results) {
-                        assignColorPairResult(result, 'qr3', 'qr4', qr);
+                        assignColorPairResult(result, 'qr3', 'qr4', qr, 2, 3);
                         detectedBBox = mergeLocationBBox(detectedBBox, qr);
                     }
                 }
@@ -2590,14 +2642,13 @@
             return projected;
         }
 
-        function decodeProjectedNewColorCrop(binaryData, crop, expectedTopBit = null, expectedRect = null, excludeRects = null, jsQrOptions = null) {
+        function decodeProjectedNewColorCrop(binaryData, crop, expectedQrNo = null, expectedRect = null, excludeRects = null, jsQrOptions = null) {
             if (!binaryData || !crop) return null;
 
             const acceptQr = (qr) => {
                 if (!qr || !qr.data || qr.isRaw) return false;
-                if (expectedTopBit !== undefined && expectedTopBit !== null) {
-                    const topBit = getColorPairTopBit(qr);
-                    if (topBit !== null && topBit !== expectedTopBit) return false;
+                if (expectedQrNo !== undefined && expectedQrNo !== null) {
+                    if (!matchesExpectedQrNumber(qr, expectedQrNo)) return false;
                 }
 
                 const bbox = getQrLocationBBox(qr.location);
@@ -2652,13 +2703,6 @@
             return null;
         }
 
-        function shouldDiscardQ3AsQ1Echo(q1Data, q3Text) {
-            if (!q1Data || !q1Data.mgmtInfo || !q1Data.text || !q3Text) return false;
-            const dataComp = q1Data.mgmtInfo.dataCompBits;
-            if (dataComp !== 0 && dataComp !== 1) return false;
-            return q3Text === q1Data.text;
-        }
-
         function buildBitMatrixFromColorStates(states, colorStates, bitIndex) {
             const n = states.length;
             const bits = new Array(n);
@@ -2696,7 +2740,7 @@
             return { data, width: size, height: size };
         }
 
-        function decodeSyntheticNewColorQr(bitsMatrix, expectedTopBit, jsQrOptions = null) {
+        function decodeSyntheticNewColorQr(bitsMatrix, expectedQrNo, jsQrOptions = null) {
             const synthetic = buildSyntheticQrBinary(bitsMatrix);
             for (const inversionAttempts of ['dontInvert', 'attemptBoth']) {
                 const qr = jsQR(synthetic.data, synthetic.width, synthetic.height, {
@@ -2706,8 +2750,7 @@
                     ...(jsQrOptions || {})
                 });
                 if (!qr || !qr.data || qr.isRaw) continue;
-                const topBit = getColorPairTopBit(qr);
-                if (expectedTopBit === undefined || expectedTopBit === null || topBit === expectedTopBit) {
+                if (expectedQrNo === undefined || expectedQrNo === null || matchesExpectedQrNumber(qr, expectedQrNo)) {
                     return qr;
                 }
             }
@@ -2760,12 +2803,6 @@
                 decoder
             );
             if (projectedBuffers.length === 0) return result;
-            const pairExcludeRects = q1Bounds ? [normalizeBBox({
-                x: q1Bounds.x - pairCrop.offsetX,
-                y: q1Bounds.y - pairCrop.offsetY,
-                width: q1Bounds.width,
-                height: q1Bounds.height
-            }, pairCrop.width, pairCrop.height)].filter(Boolean) : null;
 
             const sampledStates = sampleNewColorDisplayStates(imageData.data, width, height, q1Data, decoder);
             if (sampledStates) {
@@ -2781,18 +2818,16 @@
                 if (hasQ3Seed && (!existingResult || !existingResult.qr3) && decoder.states && projectedBuffers[1]) {
                     const qr3Synth = decodeSyntheticNewColorQr(
                         buildBitMatrixFromColorStates(sampledStates, decoder.states, 1),
-                        0,
+                        2,
                         q3DecodeOptions
                     );
-                    if (qr3Synth && !shouldDiscardQ3AsQ1Echo(q1Data, qr3Synth.data)) {
-                        result.qr3 = qr3Synth.data;
-                    }
+                    if (qr3Synth) result.qr3 = qr3Synth.data;
                 }
                 const hasQ4Seed = !!(result._q4Seed || (existingResult && existingResult._q4Seed));
                 if (hasQ4Seed && q1Data.mgmtInfo.regionCount === 4 && (!existingResult || !existingResult.qr4) && decoder.states && projectedBuffers[2]) {
                     const qr4Synth = decodeSyntheticNewColorQr(
                         buildBitMatrixFromColorStates(sampledStates, decoder.states, 2),
-                        1,
+                        3,
                         q4DecodeOptions
                     );
                     if (qr4Synth) result.qr4 = qr4Synth.data;
@@ -2809,7 +2844,7 @@
                 if (pairResult && pairResult.results) {
                     for (const qr of pairResult.results) {
                         const adjusted = offsetQrResult(qr, pairCrop.offsetX, pairCrop.offsetY);
-                        if (getColorPairTopBit(adjusted) === 1 && !result.qr2) {
+                        if (matchesExpectedQrNumber(adjusted, 1) && !result.qr2) {
                             result.qr2 = adjusted.data;
                             result._q2Seed = adjusted;
                         }
@@ -2822,7 +2857,7 @@
                 if (pairResult && pairResult.results) {
                     for (const qr of pairResult.results) {
                         const adjusted = offsetQrResult(qr, pairCrop.offsetX, pairCrop.offsetY);
-                        if (getColorPairTopBit(adjusted) === 1 && !result.qr4) {
+                        if (matchesExpectedQrNumber(adjusted, 3) && !result.qr4) {
                             result.qr4 = adjusted.data;
                             result._q4Seed = adjusted;
                         }
@@ -2870,14 +2905,12 @@
             }
 
             if (!result.qr3 && (!existingResult || !existingResult.qr3) && projectedBuffers[1]) {
-                const qr3 = decodeProjectedNewColorCrop(projectedBuffers[1], pairCrop, 0, expectedColorRect, pairExcludeRects, q3DecodeOptions);
-                if (qr3 && !shouldDiscardQ3AsQ1Echo(q1Data, qr3.data)) {
-                    result.qr3 = qr3.data;
-                }
+                const qr3 = decodeProjectedNewColorCrop(projectedBuffers[1], pairCrop, 2, expectedColorRect, null, q3DecodeOptions);
+                if (qr3) result.qr3 = qr3.data;
             }
 
             if (q1Data.mgmtInfo.regionCount === 4 && !result.qr4 && (!existingResult || !existingResult.qr4) && projectedBuffers[2]) {
-                const qr4 = decodeProjectedNewColorCrop(projectedBuffers[2], pairCrop, 1, expectedColorRect, null, q4DecodeOptions);
+                const qr4 = decodeProjectedNewColorCrop(projectedBuffers[2], pairCrop, 3, expectedColorRect, null, q4DecodeOptions);
                 if (qr4) {
                     result.qr4 = qr4.data;
                     result._q4Seed = qr4;
@@ -2906,13 +2939,11 @@
                 }
 
                 if (!result.qr3 && (!existingResult || !existingResult.qr3) && fullProjected[1]) {
-                    const qr3 = decodeProjectedNewColorCrop(fullProjected[1], fullCrop, 0, fullExpectedRect, fullExcludeRects, q3DecodeOptions);
-                    if (qr3 && !shouldDiscardQ3AsQ1Echo(q1Data, qr3.data)) {
-                        result.qr3 = qr3.data;
-                    }
+                    const qr3 = decodeProjectedNewColorCrop(fullProjected[1], fullCrop, 2, fullExpectedRect, fullExcludeRects, q3DecodeOptions);
+                    if (qr3) result.qr3 = qr3.data;
                 }
                 if (q1Data.mgmtInfo.regionCount === 4 && !result.qr4 && (!existingResult || !existingResult.qr4) && fullProjected[2]) {
-                    const qr4 = decodeProjectedNewColorCrop(fullProjected[2], fullCrop, 1, fullExpectedRect, fullExcludeRects, q4DecodeOptions);
+                    const qr4 = decodeProjectedNewColorCrop(fullProjected[2], fullCrop, 3, fullExpectedRect, fullExcludeRects, q4DecodeOptions);
                     if (qr4) {
                         result.qr4 = qr4.data;
                         result._q4Seed = qr4;
@@ -2920,7 +2951,7 @@
                 }
             }
 
-            if (shouldDiscardQ3AsQ1Echo(q1Data, result.qr3)) {
+            if (q1Data.mgmtInfo && q1Data.mgmtInfo.dataCompBits === 0 && result.qr3 && q1Data.text && result.qr3 === q1Data.text) {
                 result.qr3 = null;
             }
 
@@ -2943,27 +2974,28 @@
             return true;
         }
 
-        function parseStandardMgmt(managementCode, managementFlags16 = 0) {
-            if (managementCode === undefined || managementCode === null) return null;
-            const high = managementCode >>> 0;
-            const low = managementFlags16 >>> 0;
+        function parseStandardMgmt(managementCode, managementFlags16 = null) {
+            const managementCode32 = getManagementCode32FromParts(managementCode, managementFlags16);
+            if (managementCode32 === null) return null;
+            const high = (managementCode32 >>> 16) & 0xFFFF;
+            const low = managementCode32 & 0xFFFF;
             return {
-                qrNo: (high >>> 15) & 1,
-                colorCountBits: (high >>> 13) & 3,
-                colorSpecBits: (high >>> 5) & 0xFF,
-                dataCompBits: (high >>> 3) & 3,
-                regionIndexBits: (high >>> 1) & 3,
-                sameDataFlag: (high & 1) === 1,
-                encryptionBits: (low >>> 14) & 0x3,
-                sysEncFlag: ((low >>> 15) & 1) === 1,
-                appEncFlag: ((low >>> 14) & 1) === 1,
-                dataTypeBits: (low >>> 11) & 0x7,
-                hasDateTime: (low & 0x0400) !== 0,
-                hasExpiry: (low & 0x0200) !== 0,
-                hasReaderId: (low & 0x0100) !== 0,
-                hasImageId: (low & 0x0080) !== 0,
-                hasLocation: (low & 0x0040) !== 0,
-                hasMunicipality: (low & 0x0020) !== 0
+                qrNo: (high >>> 14) & 0x3,
+                colorCountBits: (high >>> 12) & 0x3,
+                colorSpecBits: (high >>> 4) & 0xFF,
+                dataCompBits: (high >>> 2) & 0x3,
+                regionIndexBits: high & 0x3,
+                sameDataFlag: ((low >>> 15) & 1) === 1,
+                encryptionBits: (low >>> 13) & 0x3,
+                sysEncFlag: ((low >>> 14) & 1) === 1,
+                appEncFlag: ((low >>> 13) & 1) === 1,
+                dataTypeBits: (low >>> 10) & 0x7,
+                hasDateTime: (low & 0x0200) !== 0,
+                hasExpiry: (low & 0x0100) !== 0,
+                hasReaderId: (low & 0x0080) !== 0,
+                hasImageId: (low & 0x0040) !== 0,
+                hasLocation: (low & 0x0020) !== 0,
+                hasMunicipality: (low & 0x0010) !== 0
             };
         }
 
@@ -3182,8 +3214,8 @@
                                             const imgData = zxingCtx.getImageData(0, 0, sw, sh);
                                             const res = jsQR(imgData.data, sw, sh, { inversionAttempts: 'attemptBoth' });
                                             if (res && res.data && !res.isRaw) {
-                                                const topBit = ((res.managementCode || 0) >>> 15) & 1;
-                                                if (topBit === 0) {
+                                                const qrNo = getQrNumber(res);
+                                                if (qrNo === 0) {
                                                     q1Found = offsetQrResult(res, sx, sy);
                                                     // 領域を保存
                                                     lastTwinBBox = {
@@ -3205,8 +3237,8 @@
                                 const fullData = zxingCtx.getImageData(0, 0, vw, vh);
                                 const res = jsQR(fullData.data, vw, vh, { inversionAttempts: 'attemptBoth' });
                                 if (res && res.data && !res.isRaw) {
-                                    const topBit = ((res.managementCode || 0) >>> 15) & 1;
-                                    if (topBit === 0) {
+                                    const qrNo = getQrNumber(res);
+                                    if (qrNo === 0) {
                                         q1Found = res;
                                         if (res.location) {
                                             const pts = [
@@ -3659,9 +3691,11 @@
                     // --- 結果処理ループ ---
                     for (let item of detectedItems) {
                         const { data: resultData, managementCode: resultMgmt, points: resultPts } = item;
-                        const mgmtFlags16 = item.managementFlags16 !== undefined ? item.managementFlags16 : ((item.managementCode32 || 0) & 0xFFFF);
-                        const mgmtInfo = parseStandardMgmt(resultMgmt, mgmtFlags16);
-                        const topBit = mgmtInfo ? mgmtInfo.qrNo : (((resultMgmt || 0) >> 15) & 1); // 0なら第1QR、1なら第2QR
+                        const mgmtCode32 = item.managementCode32 !== undefined && item.managementCode32 !== null
+                            ? (item.managementCode32 >>> 0)
+                            : getManagementCode32FromParts(resultMgmt, item.managementFlags16);
+                        const mgmtInfo = parseStandardMgmt(mgmtCode32);
+                        const qrNo = mgmtInfo ? mgmtInfo.qrNo : null;
 
                         if (scanStage === 1) {
                             // Stage 1でQRを発見した際、領域を保存
@@ -3683,7 +3717,7 @@
                             if (scanMode === 'digital_sign') {
                                 scanStage = 3;
                                 digitalSignStage3 = true;
-                                if (topBit === 0) {
+                                if (qrNo === 0) {
                                     firstQR = {
                                         text: resultData,
                                         managementCode: resultMgmt,
@@ -3731,15 +3765,17 @@
                                         }
                                     }
                                     statusText.innerText = "第2QR（電子署名データ）を探索中...";
-                                } else {
+                                } else if (qrNo === 1) {
                                     secondQR = { text: resultData, managementCode: resultMgmt, points: resultPts };
                                     statusText.innerText = "第1QR（元のデータ）を探索中...";
+                                } else {
+                                    continue;
                                 }
                                 continue;
                             }
 
                             // 2) デジタル署名ではない通常のStage 1処理（第1QRのみ受け入れ）
-                            if (topBit !== 0) continue;
+                            if (qrNo !== 0) continue;
 
                             firstQR = {
                                 text: resultData,
@@ -3822,9 +3858,9 @@
                             // ★ 電子署名モードのペア探索中
                             if (digitalSignStage3) {
                                 // もし missing QR が見つかったら
-                                if (topBit === 1 && !secondQR) {
+                                if (qrNo === 1 && !secondQR) {
                                     secondQR = { text: resultData, managementCode: resultMgmt, points: resultPts };
-                                } else if (topBit === 0 && !firstQR) {
+                                } else if (qrNo === 0 && !firstQR) {
                                     firstQR = {
                                         text: resultData,
                                         managementCode: resultMgmt,
@@ -3934,7 +3970,7 @@
                             }
 
                             // デジタル署名ではない通常のStage 3処理
-                            if (topBit !== 1) continue; 
+                            if (qrNo !== 1) continue; 
 
                             const diffTxt = resultData !== firstQR.text;
                             const diffMgmt = firstQR.managementCode !== undefined && resultMgmt !== undefined && firstQR.managementCode !== resultMgmt;

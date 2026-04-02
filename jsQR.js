@@ -1189,24 +1189,24 @@ function decode(data, version) {
                 result.managementCode32 = (((managementHigh16 & 0xFFFF) << 16) | (managementLow16 & 0xFFFF)) >>> 0;
                 result.managementFlags16 = managementLow16 & 0xFFFF;
                 var extBlockCount = 0;
-                if ((result.managementFlags16 & 0x0400) !== 0) extBlockCount++;
                 if ((result.managementFlags16 & 0x0200) !== 0) extBlockCount++;
                 if ((result.managementFlags16 & 0x0100) !== 0) extBlockCount++;
                 if ((result.managementFlags16 & 0x0080) !== 0) extBlockCount++;
-                var hasLocation = (result.managementFlags16 & 0x0040) !== 0;
-                var hasMunicipality = (result.managementFlags16 & 0x0020) !== 0;
+                if ((result.managementFlags16 & 0x0040) !== 0) extBlockCount++;
+                var hasLocation = (result.managementFlags16 & 0x0020) !== 0;
+                var hasMunicipality = (result.managementFlags16 & 0x0010) !== 0;
                 var extBitsNeeded = extBlockCount * 32 + (hasLocation ? 48 : 0) + (hasMunicipality ? 24 : 0) + 4;
                 if ((extBlockCount > 0 || hasLocation || hasMunicipality) && stream.available() >= extBitsNeeded) {
-                    if ((result.managementFlags16 & 0x0400) !== 0) {
+                    if ((result.managementFlags16 & 0x0200) !== 0) {
                         result.creationDateTimeExt32 = stream.readBits(32);
                     }
-                    if ((result.managementFlags16 & 0x0200) !== 0) {
+                    if ((result.managementFlags16 & 0x0100) !== 0) {
                         result.expiryExt32 = stream.readBits(32);
                     }
-                    if ((result.managementFlags16 & 0x0100) !== 0) {
+                    if ((result.managementFlags16 & 0x0080) !== 0) {
                         result.readerIdExt32 = stream.readBits(32);
                     }
-                    if ((result.managementFlags16 & 0x0080) !== 0) {
+                    if ((result.managementFlags16 & 0x0040) !== 0) {
                         result.managementExt32 = stream.readBits(32);
                     }
                     if (hasLocation) {
