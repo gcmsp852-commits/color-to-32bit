@@ -2652,6 +2652,13 @@
             return null;
         }
 
+        function shouldDiscardQ3AsQ1Echo(q1Data, q3Text) {
+            if (!q1Data || !q1Data.mgmtInfo || !q1Data.text || !q3Text) return false;
+            const dataComp = q1Data.mgmtInfo.dataCompBits;
+            if (dataComp !== 0 && dataComp !== 1) return false;
+            return q3Text === q1Data.text;
+        }
+
         function buildBitMatrixFromColorStates(states, colorStates, bitIndex) {
             const n = states.length;
             const bits = new Array(n);
@@ -2753,6 +2760,12 @@
                 decoder
             );
             if (projectedBuffers.length === 0) return result;
+            const pairExcludeRects = q1Bounds ? [normalizeBBox({
+                x: q1Bounds.x - pairCrop.offsetX,
+                y: q1Bounds.y - pairCrop.offsetY,
+                width: q1Bounds.width,
+                height: q1Bounds.height
+            }, pairCrop.width, pairCrop.height)].filter(Boolean) : null;
 
             const sampledStates = sampleNewColorDisplayStates(imageData.data, width, height, q1Data, decoder);
             if (sampledStates) {
@@ -2771,7 +2784,9 @@
                         0,
                         q3DecodeOptions
                     );
-                    if (qr3Synth) result.qr3 = qr3Synth.data;
+                    if (qr3Synth && !shouldDiscardQ3AsQ1Echo(q1Data, qr3Synth.data)) {
+                        result.qr3 = qr3Synth.data;
+                    }
                 }
                 const hasQ4Seed = !!(result._q4Seed || (existingResult && existingResult._q4Seed));
                 if (hasQ4Seed && q1Data.mgmtInfo.regionCount === 4 && (!existingResult || !existingResult.qr4) && decoder.states && projectedBuffers[2]) {
@@ -2855,8 +2870,10 @@
             }
 
             if (!result.qr3 && (!existingResult || !existingResult.qr3) && projectedBuffers[1]) {
-                const qr3 = decodeProjectedNewColorCrop(projectedBuffers[1], pairCrop, 0, expectedColorRect, null, q3DecodeOptions);
-                if (qr3) result.qr3 = qr3.data;
+                const qr3 = decodeProjectedNewColorCrop(projectedBuffers[1], pairCrop, 0, expectedColorRect, pairExcludeRects, q3DecodeOptions);
+                if (qr3 && !shouldDiscardQ3AsQ1Echo(q1Data, qr3.data)) {
+                    result.qr3 = qr3.data;
+                }
             }
 
             if (q1Data.mgmtInfo.regionCount === 4 && !result.qr4 && (!existingResult || !existingResult.qr4) && projectedBuffers[2]) {
@@ -2890,7 +2907,9 @@
 
                 if (!result.qr3 && (!existingResult || !existingResult.qr3) && fullProjected[1]) {
                     const qr3 = decodeProjectedNewColorCrop(fullProjected[1], fullCrop, 0, fullExpectedRect, fullExcludeRects, q3DecodeOptions);
-                    if (qr3) result.qr3 = qr3.data;
+                    if (qr3 && !shouldDiscardQ3AsQ1Echo(q1Data, qr3.data)) {
+                        result.qr3 = qr3.data;
+                    }
                 }
                 if (q1Data.mgmtInfo.regionCount === 4 && !result.qr4 && (!existingResult || !existingResult.qr4) && fullProjected[2]) {
                     const qr4 = decodeProjectedNewColorCrop(fullProjected[2], fullCrop, 1, fullExpectedRect, fullExcludeRects, q4DecodeOptions);
@@ -2901,7 +2920,7 @@
                 }
             }
 
-            if (q1Data.mgmtInfo && q1Data.mgmtInfo.dataCompBits === 0 && result.qr3 && q1Data.text && result.qr3 === q1Data.text) {
+            if (shouldDiscardQ3AsQ1Echo(q1Data, result.qr3)) {
                 result.qr3 = null;
             }
 
