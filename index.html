@@ -537,6 +537,8 @@
         const NEW_COLOR_SHIFT_MODULES = 8.5;
         const NEW_COLOR_SYNTH_MODULE_PX = 8;
         const NEW_COLOR_SYNTH_QUIET = 4;
+        const NEW_COLOR_DIGITAL_SIGN_FAIL_ATTEMPTS = 90;
+        const NEW_COLOR_DIGITAL_SIGN_HARD_FAIL_ATTEMPTS = 180;
         const TRI_COLOR_ORDER = ['black', 'blue', 'red', 'purple', 'yellow', 'cyan', 'green', 'white'];
         const TRI_DARK_PRIORITY = ['blue', 'red', 'purple'];
         const TRI_LIGHT_PRIORITY = ['green', 'cyan', 'yellow'];
@@ -3097,6 +3099,22 @@
             return true;
         }
 
+        function shouldFinalizeNewColorDigitalSignFailure(result, mgmtInfo) {
+            if (!result || !mgmtInfo || mgmtInfo.dataCompBits !== 3) return false;
+            if (isNewColorStageComplete(result, mgmtInfo)) return false;
+            const attempts = result.attempts || 0;
+            const hasPartialProgress = !!(
+                result.qr2 ||
+                result.qr3 ||
+                result.qr4 ||
+                result._q2Seed ||
+                result._q4Seed
+            );
+            return attempts >= (hasPartialProgress
+                ? NEW_COLOR_DIGITAL_SIGN_FAIL_ATTEMPTS
+                : NEW_COLOR_DIGITAL_SIGN_HARD_FAIL_ATTEMPTS);
+        }
+
         function parseStandardMgmt(managementCode, managementFlags16 = null) {
             const managementCode32 = getManagementCode32FromParts(managementCode, managementFlags16);
             if (managementCode32 === null) return null;
@@ -3490,6 +3508,21 @@
 
                             if (isNewColorStageComplete(newColorScanResult, mgmtInfo)) {
                                 statusText.innerText = '新カラーQRツイン読取完了。結果を表示します...';
+                                showNewColorResult(
+                                    newColorQ1Data.text,
+                                    newColorScanResult.qr2,
+                                    newColorScanResult.qr3,
+                                    newColorScanResult.qr4,
+                                    mgmtInfo,
+                                    newColorQ1Data
+                                );
+                                isProcessing = false;
+                                return;
+                            }
+
+                            if (shouldFinalizeNewColorDigitalSignFailure(newColorScanResult, mgmtInfo)) {
+                                statusText.innerText = '譁ｰ繧ｫ繝ｩ繝ｼQR繝・う繝ｳ隱ｭ蜿門ｮ御ｺ・らｵ先棡繧定｡ｨ遉ｺ縺励∪縺・..';
+                                statusText.innerText = 'Verification failed. Showing result...';
                                 showNewColorResult(
                                     newColorQ1Data.text,
                                     newColorScanResult.qr2,
