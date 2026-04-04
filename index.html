@@ -4,6 +4,7 @@
 
 
 
+
 <!DOCTYPE html>
 <html lang="ja">
 <head>
@@ -1011,6 +1012,21 @@
             isScanning = true;
             lastDetectTime = Date.now();
             requestAnimationFrame(scanLoop);
+        }
+
+        function enterDigitalSignPairScan(waitingForQrNo) {
+            scanStage = 3;
+            digitalSignStage3 = true;
+
+            if (waitingForQrNo === 1 && firstQR) {
+                firstQR.points = null;
+            } else if (waitingForQrNo === 0 && secondQR) {
+                secondQR.points = null;
+            }
+
+            statusText.innerText = waitingForQrNo === 1
+                ? "第2QR（電子署名データ）を探索中..."
+                : "第1QR（元のデータ）を探索中...";
         }
 
         function isHttpUrlText(text) {
@@ -3285,8 +3301,10 @@
             }
 
             ctx.clearRect(0, 0, overlayCanvas.width, overlayCanvas.height);
-            if (firstQR && firstQR.points) drawBoundingBox(firstQR.points, '#00E676');
-            if (secondQR && secondQR.points) drawBoundingBox(secondQR.points, '#29B6F6');
+            const hideFirstQrHighlight = scanMode === 'digital_sign' && digitalSignStage3 && firstQR && !secondQR;
+            const hideSecondQrHighlight = scanMode === 'digital_sign' && digitalSignStage3 && secondQR && !firstQR;
+            if (firstQR && firstQR.points && !hideFirstQrHighlight) drawBoundingBox(firstQR.points, '#00E676');
+            if (secondQR && secondQR.points && !hideSecondQrHighlight) drawBoundingBox(secondQR.points, '#29B6F6');
 
             const now = Date.now();
             if (!isProcessing && now - lastDetectTime > SCAN_INTERVAL_MS && video.readyState >= 2) {
@@ -3826,8 +3844,6 @@
                             // 2) デジタル署名モードの初期処理はここではなく、Stage3で扱うが、
                             //    もしStage1で何らかの理由でここに来た場合は、Stage3へ導く
                             if (scanMode === 'digital_sign') {
-                                scanStage = 3;
-                                digitalSignStage3 = true;
                                 if (qrNo === 0) {
                                     firstQR = {
                                         text: resultData,
@@ -3876,8 +3892,10 @@
                                         }
                                     }
                                     statusText.innerText = "第2QR（電子署名データ）を探索中...";
+                                    enterDigitalSignPairScan(1);
                                 } else if (qrNo === 1) {
                                     secondQR = { text: resultData, managementCode: resultMgmt, points: resultPts };
+                                    enterDigitalSignPairScan(0);
                                     statusText.innerText = "第1QR（元のデータ）を探索中...";
                                 } else {
                                     continue;
