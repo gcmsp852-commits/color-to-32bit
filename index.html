@@ -537,8 +537,6 @@
         const NEW_COLOR_SHIFT_MODULES = 8.5;
         const NEW_COLOR_SYNTH_MODULE_PX = 8;
         const NEW_COLOR_SYNTH_QUIET = 4;
-        const NEW_COLOR_DIGITAL_SIGN_FAIL_ATTEMPTS = 90;
-        const NEW_COLOR_DIGITAL_SIGN_HARD_FAIL_ATTEMPTS = 180;
         const TRI_COLOR_ORDER = ['black', 'blue', 'red', 'purple', 'yellow', 'cyan', 'green', 'white'];
         const TRI_DARK_PRIORITY = ['blue', 'red', 'purple'];
         const TRI_LIGHT_PRIORITY = ['green', 'cyan', 'yellow'];
@@ -3099,22 +3097,6 @@
             return true;
         }
 
-        function shouldFinalizeNewColorDigitalSignFailure(result, mgmtInfo) {
-            if (!result || !mgmtInfo) return false;
-            if (isNewColorStageComplete(result, mgmtInfo)) return false;
-            const attempts = result.attempts || 0;
-            const hasPartialProgress = !!(
-                result.qr2 ||
-                result.qr3 ||
-                result.qr4 ||
-                result._q2Seed ||
-                result._q4Seed
-            );
-            return attempts >= (hasPartialProgress
-                ? NEW_COLOR_DIGITAL_SIGN_FAIL_ATTEMPTS
-                : NEW_COLOR_DIGITAL_SIGN_HARD_FAIL_ATTEMPTS);
-        }
-
         function parseStandardMgmt(managementCode, managementFlags16 = null) {
             const managementCode32 = getManagementCode32FromParts(managementCode, managementFlags16);
             if (managementCode32 === null) return null;
@@ -3491,41 +3473,23 @@
                                 newColorScanResult = { qr2: null, qr3: null, qr4: null, attempts: 0, _q2Seed: null, _q4Seed: null };
                             }
 
-                            try {
-                                zxingCanvas.width = vw;
-                                zxingCanvas.height = vh;
-                                zxingCtx.drawImage(video, 0, 0, vw, vh);
-                                const fullData = zxingCtx.getImageData(0, 0, vw, vh);
+                            zxingCanvas.width = vw;
+                            zxingCanvas.height = vh;
+                            zxingCtx.drawImage(video, 0, 0, vw, vh);
+                            const fullData = zxingCtx.getImageData(0, 0, vw, vh);
 
-                                const decoded = processNewColorQRTwin(fullData, vw, vh, newColorQ1Data, newColorScanResult);
-                                if (decoded) {
-                                    if (!newColorScanResult.qr2 && decoded.qr2) newColorScanResult.qr2 = decoded.qr2;
-                                    if (!newColorScanResult.qr3 && decoded.qr3) newColorScanResult.qr3 = decoded.qr3;
-                                    if (!newColorScanResult.qr4 && decoded.qr4) newColorScanResult.qr4 = decoded.qr4;
-                                    if (!newColorScanResult._q2Seed && decoded._q2Seed) newColorScanResult._q2Seed = decoded._q2Seed;
-                                    if (!newColorScanResult._q4Seed && decoded._q4Seed) newColorScanResult._q4Seed = decoded._q4Seed;
-                                }
-                            } catch (decodeErr) {
-                                console.warn("カラーQRデコードエラー", decodeErr);
+                            const decoded = processNewColorQRTwin(fullData, vw, vh, newColorQ1Data, newColorScanResult);
+                            if (decoded) {
+                                if (!newColorScanResult.qr2 && decoded.qr2) newColorScanResult.qr2 = decoded.qr2;
+                                if (!newColorScanResult.qr3 && decoded.qr3) newColorScanResult.qr3 = decoded.qr3;
+                                if (!newColorScanResult.qr4 && decoded.qr4) newColorScanResult.qr4 = decoded.qr4;
+                                if (!newColorScanResult._q2Seed && decoded._q2Seed) newColorScanResult._q2Seed = decoded._q2Seed;
+                                if (!newColorScanResult._q4Seed && decoded._q4Seed) newColorScanResult._q4Seed = decoded._q4Seed;
                             }
                             newColorScanResult.attempts++;
 
                             if (isNewColorStageComplete(newColorScanResult, mgmtInfo)) {
                                 statusText.innerText = '新カラーQRツイン読取完了。結果を表示します...';
-                                showNewColorResult(
-                                    newColorQ1Data.text,
-                                    newColorScanResult.qr2,
-                                    newColorScanResult.qr3,
-                                    newColorScanResult.qr4,
-                                    mgmtInfo,
-                                    newColorQ1Data
-                                );
-                                isProcessing = false;
-                                return;
-                            }
-
-                            if (shouldFinalizeNewColorDigitalSignFailure(newColorScanResult, mgmtInfo)) {
-                                statusText.innerText = '署名検証に失敗しました。結果を表示します...';
                                 showNewColorResult(
                                     newColorQ1Data.text,
                                     newColorScanResult.qr2,
