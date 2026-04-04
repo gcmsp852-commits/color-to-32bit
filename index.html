@@ -3100,7 +3100,7 @@
         }
 
         function shouldFinalizeNewColorDigitalSignFailure(result, mgmtInfo) {
-            if (!result || !mgmtInfo || mgmtInfo.dataCompBits !== 3) return false;
+            if (!result || !mgmtInfo) return false;
             if (isNewColorStageComplete(result, mgmtInfo)) return false;
             const attempts = result.attempts || 0;
             const hasPartialProgress = !!(
@@ -3491,18 +3491,22 @@
                                 newColorScanResult = { qr2: null, qr3: null, qr4: null, attempts: 0, _q2Seed: null, _q4Seed: null };
                             }
 
-                            zxingCanvas.width = vw;
-                            zxingCanvas.height = vh;
-                            zxingCtx.drawImage(video, 0, 0, vw, vh);
-                            const fullData = zxingCtx.getImageData(0, 0, vw, vh);
+                            try {
+                                zxingCanvas.width = vw;
+                                zxingCanvas.height = vh;
+                                zxingCtx.drawImage(video, 0, 0, vw, vh);
+                                const fullData = zxingCtx.getImageData(0, 0, vw, vh);
 
-                            const decoded = processNewColorQRTwin(fullData, vw, vh, newColorQ1Data, newColorScanResult);
-                            if (decoded) {
-                                if (!newColorScanResult.qr2 && decoded.qr2) newColorScanResult.qr2 = decoded.qr2;
-                                if (!newColorScanResult.qr3 && decoded.qr3) newColorScanResult.qr3 = decoded.qr3;
-                                if (!newColorScanResult.qr4 && decoded.qr4) newColorScanResult.qr4 = decoded.qr4;
-                                if (!newColorScanResult._q2Seed && decoded._q2Seed) newColorScanResult._q2Seed = decoded._q2Seed;
-                                if (!newColorScanResult._q4Seed && decoded._q4Seed) newColorScanResult._q4Seed = decoded._q4Seed;
+                                const decoded = processNewColorQRTwin(fullData, vw, vh, newColorQ1Data, newColorScanResult);
+                                if (decoded) {
+                                    if (!newColorScanResult.qr2 && decoded.qr2) newColorScanResult.qr2 = decoded.qr2;
+                                    if (!newColorScanResult.qr3 && decoded.qr3) newColorScanResult.qr3 = decoded.qr3;
+                                    if (!newColorScanResult.qr4 && decoded.qr4) newColorScanResult.qr4 = decoded.qr4;
+                                    if (!newColorScanResult._q2Seed && decoded._q2Seed) newColorScanResult._q2Seed = decoded._q2Seed;
+                                    if (!newColorScanResult._q4Seed && decoded._q4Seed) newColorScanResult._q4Seed = decoded._q4Seed;
+                                }
+                            } catch (decodeErr) {
+                                console.warn("カラーQRデコードエラー", decodeErr);
                             }
                             newColorScanResult.attempts++;
 
@@ -3521,8 +3525,7 @@
                             }
 
                             if (shouldFinalizeNewColorDigitalSignFailure(newColorScanResult, mgmtInfo)) {
-                                statusText.innerText = '譁ｰ繧ｫ繝ｩ繝ｼQR繝・う繝ｳ隱ｭ蜿門ｮ御ｺ・らｵ先棡繧定｡ｨ遉ｺ縺励∪縺・..';
-                                statusText.innerText = 'Verification failed. Showing result...';
+                                statusText.innerText = '署名検証に失敗しました。結果を表示します...';
                                 showNewColorResult(
                                     newColorQ1Data.text,
                                     newColorScanResult.qr2,
