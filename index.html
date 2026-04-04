@@ -1,4 +1,5 @@
-﻿
+
+
 
 
 
@@ -1066,12 +1067,12 @@
             const hasImageDataId = !!result.hasImageDataId;
             if (hasImageDataId) {
                 return result.verified
-                    ? `認証できました / 署名者: ${result.senderName} / 画像ID: ${result.imageDataId || 0}`
-                    : `認証に失敗しました / 署名者: ${result.senderName} / 画像ID: ${result.imageDataId || 0}`;
+                    ? `認証できました`
+                    : `認証に失敗しました`;
             }
             return result.verified
-                ? `電子署名の認証ができました。作成者は${result.senderName}です。`
-                : '電子署名の認証ができませんでした';
+                ? `認証できました。`
+                : '認証ができませんでした';
         }
 
         // errorMessage: 読取期限切れ・読取者ID不一致時のエラーメッセージ
