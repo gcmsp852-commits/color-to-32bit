@@ -57,6 +57,7 @@
         .qr-data-card { background: #000; border: 1px solid #333; border-radius: 6px; padding: 10px; text-align: left; }
         .qr-data-card label { display: block; font-size: 0.8rem; color: #888; margin-bottom: 4px; }
         .qr-data-card .text { font-size: 1.1rem; color: #fff; word-break: break-all; font-family: monospace; }
+        .qr-data-card .text a { color: #64B5F6; text-decoration: underline; }
         .qr-data-card .mgmt { font-size: 0.8rem; color: #4CAF50; font-family: monospace; margin-top: 4px; }
         
         .enc-badge { display: inline-block; padding: 4px 10px; border-radius: 4px; font-size: 0.85rem; font-weight: bold; margin-bottom: 8px; }
@@ -87,7 +88,7 @@
                 <button class="btn double-enc" id="doubleEncModeBtn">二重暗号化モード</button>
                 <button class="btn" id="colorEncModeBtn" style="background-color:#00897B; display:none;">カラー符号化モード</button>
                 <button class="btn" id="newColorEncModeBtn" style="background-color:#6A1B9A;">新カラー符号化モード</button>
-                <button class="btn secondary" id="logoutBtn" style="margin-top:10px; font-size:0.9rem;">ログアウト</button>
+                <button class="btn secondary" id="logoutBtn" style="margin-top:10px; font-size:0.9rem;">端末情報を変更</button>
             </div>
         </div>
     </div>
@@ -95,14 +96,16 @@
     <!-- 読取者IDログイン画面 -->
     <div class="overlay-screen" id="loginScreen">
         <div class="overlay-box">
-            <h2 style="color:#2196F3;">読取者ID ログイン</h2>
-            <p>読取者IDを入力してください</p>
-            <input type="text" id="loginReaderIdInput" placeholder="英数字・記号（ASCII文字）" style="font-size:1rem;" />
+            <h2 style="color:#2196F3;">端末情報登録</h2>
+            <p>メールアドレス、氏名、ニックネームを登録してください</p>
+            <input type="text" id="loginEmailInput" placeholder="メールアドレス" style="font-size:1rem;" />
+            <input type="text" id="loginNameInput" placeholder="氏名" style="font-size:1rem;" />
+            <input type="text" id="loginNicknameInput" placeholder="ニックネーム" style="font-size:1rem;" />
             <label style="display:flex; align-items:center; gap:8px; font-size:0.9rem; color:#ccc; cursor:pointer;">
                 <input type="checkbox" id="rememberReaderId" style="width:auto; accent-color:#2196F3;">
-                読取者IDを記憶する
+                端末情報を記憶する
             </label>
-            <button class="btn" onclick="doLogin()">ログイン</button>
+            <button class="btn" onclick="doLogin()">登録</button>
         </div>
     </div>
 
@@ -179,6 +182,10 @@
                 <div class="qr-data-card" style="border-color: #FFD54F; margin-top:12px;">
                     <label style="color:#FFD54F;">認証鍵</label>
                     <div class="text" id="dsAuthKey">-</div>
+                </div>
+                <div id="dsCreationDateCard" class="qr-data-card" style="border-color: #81C784; margin-top:12px; display:none;">
+                    <label style="color:#81C784;">QRツイン作成日時</label>
+                    <div class="text" id="dsCreationDateTime">-</div>
                 </div>
                 <div id="dsImageContainer" style="margin-top:12px; text-align:center; display:none;">
                     <img id="dsImage" style="max-width:100%; max-height:240px; border-radius:8px; border:2px solid #555;" />
@@ -268,6 +275,10 @@
                 <label style="color:#FFD54F;">電子署名検証</label>
                 <div class="text" id="newColorVerifyText">-</div>
             </div>
+            <div id="newColorCreationDateCard" class="qr-data-card" style="border-color: #81C784; display:none;">
+                <label style="color:#81C784;">QRツイン作成日時</label>
+                <div class="text" id="newColorCreationDateText">-</div>
+            </div>
             <button class="btn" style="background-color:#6A1B9A;" onclick="restartScan()">もう一度スキャン</button>
             <button class="btn secondary" onclick="goBack()">モード切替</button>
         </div>
@@ -312,8 +323,8 @@
         let digitalSignStage3 = false; // 電子署名モードの第2QR（もしくはペア）探索中フラグ
         let lastTwinBBox = null; // ★ Stage 1で検出したツインQRの領域を保存
 
-        // ★ 読取者IDログインシステム
-        let currentReaderIdHash = null; // ログイン中の読取者IDハッシュ(32bit)
+        // ★ 端末情報登録システム
+        let currentTerminalHashes = [];
 
         // FNV-1a 32bit hash（Generator と同一アルゴリズム）
         function hashReaderId32(readerId) {
@@ -439,44 +450,77 @@
             }
         }
 
-        // ログイン処理
+        function getTerminalProfile() {
+            return {
+                email: document.getElementById('loginEmailInput').value.trim(),
+                name: document.getElementById('loginNameInput').value.trim(),
+                nickname: document.getElementById('loginNicknameInput').value.trim()
+            };
+        }
+
+        function setTerminalProfile(profile = {}) {
+            document.getElementById('loginEmailInput').value = profile.email || '';
+            document.getElementById('loginNameInput').value = profile.name || '';
+            document.getElementById('loginNicknameInput').value = profile.nickname || '';
+        }
+
+        function buildTerminalHashes(profile) {
+            const values = [profile.email, profile.name, profile.nickname]
+                .map(v => String(v || '').trim())
+                .filter(Boolean);
+            return values.map(value => hashReaderId32(value));
+        }
+
+        function matchesRegisteredTerminalId(readerIdExt32) {
+            if (readerIdExt32 === undefined || readerIdExt32 === null) return true;
+            return currentTerminalHashes.some(hash => (hash >>> 0) === (readerIdExt32 >>> 0));
+        }
+
+        // 端末情報登録処理
         function doLogin() {
-            const rid = document.getElementById('loginReaderIdInput').value.trim();
-            if (!rid) { alert('読取者IDを入力してください'); return; }
-            if (!/^[\x20-\x7E]+$/.test(rid)) { alert('ASCII文字のみ入力できます'); return; }
-            currentReaderIdHash = hashReaderId32(rid);
+            const profile = getTerminalProfile();
+            if (!profile.email && !profile.name && !profile.nickname) {
+                alert('メールアドレス、氏名、ニックネームのいずれかを入力してください');
+                return;
+            }
+            currentTerminalHashes = buildTerminalHashes(profile);
             const remember = document.getElementById('rememberReaderId').checked;
             if (remember) {
-                localStorage.setItem('qrtwin_reader_id', rid);
+                localStorage.setItem('qrtwin_terminal_profile', JSON.stringify(profile));
                 localStorage.setItem('qrtwin_reader_remember', '1');
             } else {
-                localStorage.removeItem('qrtwin_reader_id');
+                localStorage.removeItem('qrtwin_terminal_profile');
                 localStorage.removeItem('qrtwin_reader_remember');
             }
             document.getElementById('loginScreen').style.display = 'none';
         }
 
-        // ログアウト処理
+        // 登録解除処理
         function doLogout() {
-            currentReaderIdHash = null;
-            localStorage.removeItem('qrtwin_reader_id');
+            currentTerminalHashes = [];
+            localStorage.removeItem('qrtwin_terminal_profile');
             localStorage.removeItem('qrtwin_reader_remember');
-            document.getElementById('loginReaderIdInput').value = '';
+            setTerminalProfile({});
             document.getElementById('rememberReaderId').checked = false;
             document.getElementById('loginScreen').style.display = 'flex';
         }
 
-        // 起動時: 記憶された読取者IDがあれば自動ログイン
+        // 起動時: 記憶された端末情報があれば自動登録
         (function initLogin() {
-            const saved = localStorage.getItem('qrtwin_reader_id');
+            const saved = localStorage.getItem('qrtwin_terminal_profile');
             const remember = localStorage.getItem('qrtwin_reader_remember');
             if (saved && remember === '1') {
-                currentReaderIdHash = hashReaderId32(saved);
-                // ログイン画面をスキップ
-            } else {
-                // ログイン画面を表示
-                document.getElementById('loginScreen').style.display = 'flex';
+                try {
+                    const profile = JSON.parse(saved);
+                    setTerminalProfile(profile);
+                    currentTerminalHashes = buildTerminalHashes(profile);
+                    document.getElementById('rememberReaderId').checked = true;
+                    return;
+                } catch (e) {
+                    localStorage.removeItem('qrtwin_terminal_profile');
+                }
             }
+            document.getElementById('loginScreen').style.display = 'flex';
         })();
 
         const SCAN_INTERVAL_MS = 40;
@@ -968,6 +1012,68 @@
             requestAnimationFrame(scanLoop);
         }
 
+        function isHttpUrlText(text) {
+            if (!text) return false;
+            try {
+                const url = new URL(String(text));
+                return url.protocol === 'http:' || url.protocol === 'https:';
+            } catch (e) {
+                return false;
+            }
+        }
+
+        function renderResultText(elementId, text, emptyText = '-') {
+            const el = document.getElementById(elementId);
+            if (!el) return;
+            const value = text ? String(text) : emptyText;
+            el.innerHTML = '';
+            if (value !== emptyText && isHttpUrlText(value)) {
+                const link = document.createElement('a');
+                link.href = value;
+                link.target = '_blank';
+                link.rel = 'noopener noreferrer';
+                link.textContent = value;
+                el.appendChild(link);
+                return;
+            }
+            el.textContent = value;
+        }
+
+        function formatCreationDateTimeExt32(value) {
+            if (value === undefined || value === null) return '';
+            const year = ((value >>> 28) & 0xF) + 2026;
+            const month = (value >>> 24) & 0xF;
+            const day = (value >>> 19) & 0x1F;
+            const hour = (value >>> 14) & 0x1F;
+            const minute = (value >>> 8) & 0x3F;
+            const second = (value >>> 2) & 0x3F;
+            const pad = n => String(n).padStart(2, '0');
+            return `${year}/${pad(month)}/${pad(day)} ${pad(hour)}:${pad(minute)}:${pad(second)}`;
+        }
+
+        function renderCreationDateCard(cardId, textId, ext32) {
+            const card = document.getElementById(cardId);
+            if (!card) return;
+            if (ext32 === undefined || ext32 === null) {
+                card.style.display = 'none';
+                return;
+            }
+            card.style.display = '';
+            renderResultText(textId, formatCreationDateTimeExt32(ext32));
+        }
+
+        function buildDigitalSignatureMessage(result) {
+            const hasImageDataId = !!result.hasImageDataId;
+            if (hasImageDataId) {
+                return result.verified
+                    ? `認証できました / 署名者: ${result.senderName} / 画像ID: ${result.imageDataId || 0}`
+                    : `認証に失敗しました / 署名者: ${result.senderName} / 画像ID: ${result.imageDataId || 0}`;
+            }
+            return result.verified
+                ? `電子署名の認証ができました。作成者は${result.senderName}です。`
+                : '電子署名の認証ができませんでした';
+        }
+
         // errorMessage: 読取期限切れ・読取者ID不一致時のエラーメッセージ
         function showResultScreen(digitalSignResult = null, errorMessage = null) {
             if (navigator.vibrate) navigator.vibrate([40, 30, 40]);
@@ -977,6 +1083,10 @@
             const normalSection = document.getElementById('normalResultSection');
             const dsSection = document.getElementById('digitalSignResultSection');
             const resultTitle = document.getElementById('resultTitle');
+            const dsVerifyCard = document.getElementById('dsVerifyCard');
+            const dsVerifyText = document.getElementById('dsVerifyText');
+            const imgContainer = document.getElementById('dsImageContainer');
+            const imgEl = document.getElementById('dsImage');
 
             if (errorMessage) {
                 // ★ エラーメッセージ表示（読取期限切れ・読取者ID不一致）
@@ -984,8 +1094,8 @@
                 dsSection.style.display = 'none';
                 resultTitle.innerText = errorMessage;
                 resultTitle.style.color = '#F44336';
-                document.getElementById('resText1').innerText = '-';
-                document.getElementById('resText2').innerText = '-';
+                renderResultText('resText1', null);
+                renderResultText('resText2', null);
                 const label1El = document.getElementById('normalResultLabel1');
                 const label2El = document.getElementById('normalResultLabel2');
                 if (label1El) label1El.innerText = '第1QR';
@@ -998,29 +1108,25 @@
                 resultTitle.innerText = '電子署名 認証結果';
 
                 // 読取内容
-                document.getElementById('dsResContent').innerText = firstQR ? firstQR.text : '-';
+                renderResultText('dsResContent', firstQR ? firstQR.text : null);
 
                 // 認証結果
-                const verifyCard = document.getElementById('dsVerifyCard');
-                const verifyText = document.getElementById('dsVerifyText');
                 if (digitalSignResult.verified) {
-                    verifyCard.style.borderColor = '#4CAF50';
-                    verifyText.style.color = '#4CAF50';
-                    verifyText.innerText = '認証できました';
+                    dsVerifyCard.style.borderColor = '#4CAF50';
+                    dsVerifyText.style.color = '#4CAF50';
                 } else {
-                    verifyCard.style.borderColor = '#F44336';
-                    verifyText.style.color = '#F44336';
-                    verifyText.innerText = '認証に失敗しました';
+                    dsVerifyCard.style.borderColor = '#F44336';
+                    dsVerifyText.style.color = '#F44336';
                 }
+                renderResultText('dsVerifyText', buildDigitalSignatureMessage(digitalSignResult));
 
                 // 認証鍵（組織名）
-                document.getElementById('dsAuthKey').innerText = digitalSignResult.senderName || '-';
+                renderResultText('dsAuthKey', digitalSignResult.senderName || null);
+                renderCreationDateCard('dsCreationDateCard', 'dsCreationDateTime', firstQR ? firstQR.creationDateTimeExt32 : null);
 
                 // 画像データID → 画像表示
-                const imgContainer = document.getElementById('dsImageContainer');
-                const imgEl = document.getElementById('dsImage');
                 const imgId = digitalSignResult.imageDataId;
-                if (imgId && imgId >= 1 && imgId <= 10) {
+                if (digitalSignResult.hasImageDataId && imgId && imgId >= 1 && imgId <= 10) {
                     imgEl.src = 'ID' + imgId + '.png';
                     imgEl.alt = '画像データ ID' + imgId;
                     imgEl.onerror = function() { imgContainer.style.display = 'none'; };
@@ -1049,8 +1155,8 @@
                     if (label2El) label2El.innerText = '第2QR';
                 }
 
-                document.getElementById('resText1').innerText = firstQR ? firstQR.text : '-';
-                document.getElementById('resText2').innerText = secondQR ? secondQR.text : '-';
+                renderResultText('resText1', firstQR ? firstQR.text : null);
+                renderResultText('resText2', secondQR ? secondQR.text : null);
             }
 
             document.getElementById('resultScreen').style.display = 'flex';
@@ -1948,7 +2054,7 @@
                     return;
                 }
                 if (qr.readerIdExt32 !== undefined) {
-                    if (currentReaderIdHash === null || (qr.readerIdExt32 >>> 0) !== (currentReaderIdHash >>> 0)) {
+                    if (!matchesRegisteredTerminalId(qr.readerIdExt32)) {
                         target._readerIdFailed = true;
                         return;
                     }
@@ -2176,10 +2282,10 @@
         }
 
         function showColorResult(data) {
-            document.getElementById('colorRes1').innerText = data.qr1 || '(not found)';
-            document.getElementById('colorRes2').innerText = data.qr2 || '(not found)';
-            document.getElementById('colorRes3').innerText = data.qr3 || '(not found)';
-            document.getElementById('colorRes4').innerText = data.qr4 || '(not found)';
+            renderResultText('colorRes1', data.qr1 || null, '(not found)');
+            renderResultText('colorRes2', data.qr2 || null, '(not found)');
+            renderResultText('colorRes3', data.qr3 || null, '(not found)');
+            renderResultText('colorRes4', data.qr4 || null, '(not found)');
             if (navigator.vibrate) navigator.vibrate([100, 50, 100]);
             document.getElementById('colorResultScreen').style.display = 'flex';
         }
@@ -3036,8 +3142,9 @@
         }
 
         function verifyNewColorSignature(signatureText, payloadText, q1Meta) {
+            const hasImageDataId = !!(q1Meta && q1Meta.managementExt32);
             if (!signatureText) {
-                return { verified: false, senderName: '署名データなし', imageDataId: q1Meta && q1Meta.managementExt32 ? q1Meta.managementExt32 : 0 };
+                return { verified: false, senderName: '署名データなし', imageDataId: q1Meta && q1Meta.managementExt32 ? q1Meta.managementExt32 : 0, hasImageDataId };
             }
 
             try {
@@ -3056,13 +3163,15 @@
                     verified,
                     senderName,
                     keyId,
-                    imageDataId: q1Meta && q1Meta.managementExt32 ? q1Meta.managementExt32 : 0
+                    imageDataId: q1Meta && q1Meta.managementExt32 ? q1Meta.managementExt32 : 0,
+                    hasImageDataId
                 };
             } catch (err) {
                 return {
                     verified: false,
                     senderName: '署名解析エラー',
-                    imageDataId: q1Meta && q1Meta.managementExt32 ? q1Meta.managementExt32 : 0
+                    imageDataId: q1Meta && q1Meta.managementExt32 ? q1Meta.managementExt32 : 0,
+                    hasImageDataId
                 };
             }
         }
@@ -3095,6 +3204,7 @@
             const combinedCard = document.getElementById('newColorCombinedCard');
             const verifyCard = document.getElementById('newColorVerifyCard');
             const verifyText = document.getElementById('newColorVerifyText');
+            const creationDateExt32 = q1Meta && q1Meta.creationDateTimeExt32 != null ? q1Meta.creationDateTimeExt32 : null;
 
             let combinedLabel = '';
             let combinedText = '';
@@ -3151,15 +3261,15 @@
                 verifyCard.style.display = '';
                 verifyCard.style.borderColor = verifyInfo.verified ? '#4CAF50' : '#F44336';
                 verifyText.style.color = verifyInfo.verified ? '#4CAF50' : '#F44336';
-                verifyText.innerText = verifyInfo.verified
-                    ? `認証できました / 署名者: ${verifyInfo.senderName} / 画像ID: ${verifyInfo.imageDataId || 0}`
-                    : `認証に失敗しました / 署名者: ${verifyInfo.senderName} / 画像ID: ${verifyInfo.imageDataId || 0}`;
+                renderResultText('newColorVerifyText', buildDigitalSignatureMessage(verifyInfo));
             }
 
-            document.getElementById('newColorRes1').innerText = q1Text || '-';
-            document.getElementById('newColorRes2').innerText = q2Text || '(未読取)';
-            document.getElementById('newColorRes3').innerText = q3Text || '(未読取)';
-            document.getElementById('newColorRes4').innerText = q4Text || '(未読取)';
+            renderResultText('newColorRes1', q1Text || null);
+            renderResultText('newColorRes2', q2Text || null, '(未読取)');
+            renderResultText('newColorRes3', q3Text || null, '(未読取)');
+            renderResultText('newColorRes4', q4Text || null, '(未読取)');
+            renderResultText('newColorResCombined', combinedText || null);
+            renderCreationDateCard('newColorCreationDateCard', 'newColorCreationDateText', creationDateExt32);
 
             document.getElementById('newColorResultScreen').style.display = 'flex';
         }
@@ -3273,9 +3383,9 @@
                                     }
                                     // 読取者IDチェック
                                     if (q1Found.readerIdExt32 !== undefined) {
-                                        if (currentReaderIdHash === null || (q1Found.readerIdExt32 >>> 0) !== (currentReaderIdHash >>> 0)) {
+                                        if (!matchesRegisteredTerminalId(q1Found.readerIdExt32)) {
                                             isScanning = false; isProcessing = false;
-                                            showResultScreen(null, "読取者IDが一致しません");
+                                            showResultScreen(null, "読取端末IDが一致しません");
                                             return;
                                         }
                                     }
@@ -3418,7 +3528,7 @@
                         }
                         if (colorScanResult._readerIdFailed) {
                             isScanning = false; isProcessing = false;
-                            showResultScreen(null, "読取者IDが一致しません");
+                            showResultScreen(null, "読取端末IDが一致しません");
                             return;
                         }
                         if (colorScanResult._locationFailed) {
@@ -3740,9 +3850,9 @@
                                     }
                                     // 読取者IDチェック
                                     if (firstQR.readerIdExt32 !== undefined) {
-                                        if (currentReaderIdHash === null || (firstQR.readerIdExt32 >>> 0) !== (currentReaderIdHash >>> 0)) {
+                                        if (!matchesRegisteredTerminalId(firstQR.readerIdExt32)) {
                                             isScanning = false; isProcessing = false;
-                                            showResultScreen(null, "読取者IDが一致しません");
+                                            showResultScreen(null, "読取端末IDが一致しません");
                                             return;
                                         }
                                     }
@@ -3800,9 +3910,9 @@
                             }
                             // ★ 読取者IDチェック（全モード共通）
                             if (firstQR.readerIdExt32 !== undefined) {
-                                if (currentReaderIdHash === null || (firstQR.readerIdExt32 >>> 0) !== (currentReaderIdHash >>> 0)) {
+                                if (!matchesRegisteredTerminalId(firstQR.readerIdExt32)) {
                                     isScanning = false; isProcessing = false;
-                                    showResultScreen(null, "読取者IDが一致しません");
+                                    showResultScreen(null, "読取端末IDが一致しません");
                                     return;
                                 }
                             }
@@ -3883,9 +3993,9 @@
                                     }
                                     // 読取者IDチェック
                                     if (firstQR.readerIdExt32 !== undefined) {
-                                        if (currentReaderIdHash === null || (firstQR.readerIdExt32 >>> 0) !== (currentReaderIdHash >>> 0)) {
+                                        if (!matchesRegisteredTerminalId(firstQR.readerIdExt32)) {
                                             isScanning = false; isProcessing = false;
-                                            showResultScreen(null, "読取者IDが一致しません");
+                                            showResultScreen(null, "読取端末IDが一致しません");
                                             return;
                                         }
                                     }
@@ -3925,7 +4035,7 @@
                                         signBytes = new Uint8Array(42);
                                         for (let i = 0; i < 42; i++) signBytes[i] = binaryStr.charCodeAt(i);
                                     } catch(e) {
-                                        showResultScreen({ verified: false, senderName: "不明", imageDataId: 0 });
+                                        showResultScreen({ verified: false, senderName: "不明", imageDataId: 0, hasImageDataId: false });
                                         return;
                                     }
 
@@ -3935,6 +4045,7 @@
 
                                     // 画像データIDを第1QRの拡張管理部32bitから取得
                                     const imageDataId = firstQR.managementExt32 || 0;
+                                    const hasImageDataId = firstQR.managementExt32 !== undefined && firstQR.managementExt32 !== null;
 
                                         // (2) 第1QRの全コード語（RS訂正済み再インタリーブ）でハッシュ計算と検証
                                         try {
@@ -3959,10 +4070,10 @@
                                             console.warn(`[Verify] Unknown KeyID: ${keyId}, no public key found`);
                                         }
 
-                                        showResultScreen({ verified: verified, senderName: senderName, imageDataId: imageDataId });
+                                        showResultScreen({ verified: verified, senderName: senderName, imageDataId: imageDataId, hasImageDataId: hasImageDataId });
                                     } catch (err) {
                                         console.error("Verification failed", err);
-                                        showResultScreen({ verified: false, senderName: "エラー", imageDataId: 0 });
+                                        showResultScreen({ verified: false, senderName: "エラー", imageDataId: 0, hasImageDataId: false });
                                     }
                                     return;
                                 }
